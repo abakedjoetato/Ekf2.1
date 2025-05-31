@@ -61,6 +61,287 @@ class EmbedFactory:
         'main': 'main.png'
     }
 
+    # Themed messages for each embed type
+    THEMED_MESSAGES = {
+        'connection_join': [
+            ("Reinforcements Arrive", "A new operative has entered the battlefield"),
+            ("Squad Member Online", "Fresh backup has joined the mission"),
+            ("New Arrival Detected", "Another survivor enters the hostile zone"),
+            ("Operative Deployment", "Military personnel now active in the field"),
+            ("Backup Has Arrived", "Additional support is now operational"),
+            ("New Fighter Enlisted", "Another warrior joins the conflict"),
+            ("Mercenary Activated", "A hired gun has entered the combat zone"),
+            ("Soldier Reporting In", "Military unit now deployed and ready"),
+            ("Combat Unit Online", "Tactical operator is now field-ready"),
+            ("Fresh Blood Arrives", "New combatant has entered the warzone")
+        ],
+        'connection_leave': [
+            ("Extraction Confirmed", "Operative has successfully left the battlefield"),
+            ("Squad Member Offline", "Team member has concluded their mission"),
+            ("Departure Logged", "Fighter has withdrawn from the combat zone"),
+            ("Mission Complete", "Operative extraction has been completed"),
+            ("Radio Silence", "Communication lost with field operative"),
+            ("Tactical Withdrawal", "Strategic retreat executed successfully"),
+            ("End of Deployment", "Tour of duty has been concluded"),
+            ("Evacuation Complete", "Personnel safely removed from danger zone"),
+            ("Mission Concluded", "Operative has finished their assignment"),
+            ("Fade to Black", "Last transmission received from departing unit")
+        ],
+        'killfeed_kill': [
+            ("Hostile Eliminated", "Target neutralized with precision"),
+            ("Combat Victory", "Enemy combatant has been defeated"),
+            ("Kill Confirmed", "Hostile threat successfully eliminated"),
+            ("Target Down", "Opposition fighter has been neutralized"),
+            ("Elimination Recorded", "Enemy operative removed from battlefield"),
+            ("Hostile Neutralized", "Threat has been permanently silenced"),
+            ("Combat Success", "Target eliminated with tactical efficiency"),
+            ("Enemy Down", "Opposition force member neutralized"),
+            ("Confirmed Kill", "Hostile combatant eliminated in action"),
+            ("Threat Eliminated", "Enemy operative has been neutralized")
+        ],
+        'killfeed_suicide': [
+            ("Self-Inflicted Casualty", "Operative eliminated by their own actions"),
+            ("Friendly Fire Incident", "Self-elimination has been recorded"),
+            ("Training Accident", "Operative lost due to equipment malfunction"),
+            ("Tactical Mishap", "Self-inflicted casualty reported"),
+            ("Equipment Failure", "Operative eliminated by gear malfunction"),
+            ("Self-Elimination", "Fighter removed by their own device"),
+            ("Accidental Discharge", "Unintended self-neutralization occurred"),
+            ("Operator Error", "Fatal mistake has been recorded"),
+            ("Self-Sabotage", "Operative eliminated through own actions"),
+            ("Fatal Miscalculation", "Self-induced elimination confirmed")
+        ],
+        'killfeed_fall': [
+            ("Gravity Wins", "Operative eliminated by gravitational forces"),
+            ("Fatal Drop", "Long fall has claimed another victim"),
+            ("Elevation Casualty", "Height difference proved deadly"),
+            ("Terminal Velocity", "Gravity has claimed its prize"),
+            ("Death from Above", "Fatal descent has been recorded"),
+            ("High Altitude Loss", "Elevation proved too much to handle"),
+            ("Falling Casualty", "Operative lost to vertical miscalculation"),
+            ("Ground Impact", "Fatal meeting with solid earth"),
+            ("Descent Disaster", "Gravity claimed another victim"),
+            ("Free Fall Fatality", "Uncontrolled descent ended badly")
+        ],
+        'mission_ready': [
+            ("Objective Available", "New tactical mission is ready for deployment"),
+            ("Mission Briefing", "High-value target area now accessible"),
+            ("Operation Greenlight", "Strategic objective cleared for engagement"),
+            ("Target Acquired", "Priority mission zone now active"),
+            ("Go Signal Received", "Mission parameters have been established"),
+            ("Deployment Authorized", "Tactical operation ready for execution"),
+            ("Mission Active", "Strategic objective is now operational"),
+            ("Objective Online", "Target zone cleared for engagement"),
+            ("Operation Commenced", "Mission parameters are now live"),
+            ("Battle Orders", "Tactical engagement zone is active")
+        ],
+        'airdrop_incoming': [
+            ("Supply Drop Inbound", "Aerial resupply package approaching"),
+            ("Cargo Drop Detected", "Supply aircraft on final approach"),
+            ("Air Support Incoming", "Logistics drop confirmed inbound"),
+            ("Supply Bird Approaching", "Aerial cargo delivery in progress"),
+            ("Package Delivery", "High-altitude supply drop initiated"),
+            ("Resupply Mission", "Aerial logistics package incoming"),
+            ("Sky Delivery", "Supply aircraft making final approach"),
+            ("Cargo Inbound", "Aerial resupply mission in progress"),
+            ("Supply Drop Active", "Logistics delivery now approaching"),
+            ("Air Logistics", "Supply package incoming from above")
+        ],
+        'helicrash_event': [
+            ("Aircraft Down", "Helicopter has crash-landed in the area"),
+            ("Emergency Landing", "Rotorcraft made unscheduled ground contact"),
+            ("Heli Down", "Aviation incident has been reported"),
+            ("Crash Site Active", "Helicopter wreckage detected"),
+            ("Bird Down", "Rotary aircraft suffered catastrophic failure"),
+            ("Emergency Descent", "Helicopter made forced landing"),
+            ("Aviation Incident", "Rotorcraft emergency landing confirmed"),
+            ("Chopper Down", "Helicopter crash site now active"),
+            ("Flight Emergency", "Aviation emergency landing reported"),
+            ("Rotor Failure", "Helicopter suffered mechanical failure")
+        ],
+        'trader_arrival': [
+            ("Black Market Open", "Underground dealer has arrived"),
+            ("Merchant Arrival", "Independent trader now conducting business"),
+            ("Dealer Active", "Black market vendor is open for trade"),
+            ("Trade Opportunity", "Special merchant has arrived"),
+            ("Underground Market", "Illegal arms dealer now available"),
+            ("Contraband Available", "Black market trader is open"),
+            ("Shadow Merchant", "Underground dealer conducting business"),
+            ("Arms Dealer Active", "Weapons merchant now available"),
+            ("Black Market Vendor", "Illegal trader has set up shop"),
+            ("Underworld Trading", "Shadow market is now operational")
+        ]
+    }
+
+    @classmethod
+    def _get_themed_message(cls, message_type: str, index: int = None) -> Tuple[str, str]:
+        """Get a themed message for the given type"""
+        import random
+        
+        messages = cls.THEMED_MESSAGES.get(message_type, [("System Message", "Event occurred")])
+        
+        if index is not None and 0 <= index < len(messages):
+            return messages[index]
+        
+        # Return random themed message
+        return random.choice(messages)
+
+    @classmethod
+    async def build_connection_embed(cls, data: Dict[str, Any]) -> Tuple[discord.Embed, Optional[discord.File]]:
+        """Build themed connection embed"""
+        try:
+            # Determine if join or leave
+            is_join = 'arrive' in data.get('title', '').lower() or 'reinforcements' in data.get('title', '').lower()
+            message_type = 'connection_join' if is_join else 'connection_leave'
+            
+            # Get themed message
+            title, description = cls._get_themed_message(message_type)
+            
+            # Create embed
+            color = cls.COLORS['connection']
+            embed = discord.Embed(
+                title=title,
+                description=description,
+                color=color,
+                timestamp=datetime.now(timezone.utc)
+            )
+            
+            # Add fields
+            player_name = data.get('player_name', 'Unknown Player')
+            platform = data.get('platform', 'Unknown')
+            server_name = data.get('server_name', 'Unknown Server')
+            
+            embed.add_field(name="Player", value=player_name, inline=True)
+            embed.add_field(name="Platform", value=platform, inline=True)
+            embed.add_field(name="Server", value=server_name, inline=True)
+            
+            # Set thumbnail
+            asset_path = cls.ASSETS_PATH / cls.ASSETS['connection']
+            file_attachment = None
+            if asset_path.exists():
+                file_attachment = discord.File(str(asset_path), filename=cls.ASSETS['connection'])
+                embed.set_thumbnail(url=f"attachment://{cls.ASSETS['connection']}")
+            
+            embed.set_footer(text="Powered by Discord.gg/EmeraldServers")
+            return embed, file_attachment
+            
+        except Exception as e:
+            logger.error(f"Failed to build connection embed: {e}")
+            return cls._create_fallback_embed("Connection Event", "Player activity recorded")
+
+    @classmethod
+    async def build_killfeed_embed(cls, data: Dict[str, Any]) -> Tuple[discord.Embed, Optional[discord.File]]:
+        """Build themed killfeed embed"""
+        try:
+            is_suicide = data.get('is_suicide', False)
+            weapon = data.get('weapon', 'Unknown')
+            
+            # Determine message type
+            if is_suicide:
+                if 'fall' in weapon.lower() or 'falling' in weapon.lower():
+                    message_type = 'killfeed_fall'
+                else:
+                    message_type = 'killfeed_suicide'
+            else:
+                message_type = 'killfeed_kill'
+            
+            # Get themed message
+            title, description = cls._get_themed_message(message_type)
+            
+            # Create embed
+            color = cls.COLORS['killfeed']
+            embed = discord.Embed(
+                title=title,
+                description=description,
+                color=color,
+                timestamp=datetime.now(timezone.utc)
+            )
+            
+            if is_suicide:
+                # Suicide embed
+                player_name = data.get('victim', data.get('player_name', 'Unknown'))
+                embed.add_field(name="Player", value=player_name, inline=True)
+                embed.add_field(name="Cause", value=weapon, inline=True)
+                
+                # Use appropriate asset
+                asset_name = 'falling.png' if 'fall' in weapon.lower() else 'suicide.png'
+            else:
+                # Kill embed
+                killer = data.get('killer', 'Unknown')
+                victim = data.get('victim', 'Unknown')
+                distance = data.get('distance', 0)
+                
+                embed.add_field(name="Killer", value=killer, inline=True)
+                embed.add_field(name="Victim", value=victim, inline=True)
+                embed.add_field(name="Weapon", value=weapon, inline=True)
+                
+                if distance and float(distance) > 0:
+                    embed.add_field(name="Distance", value=f"{distance}m", inline=True)
+                    
+                asset_name = 'killfeed.png'
+            
+            # Set thumbnail
+            asset_path = cls.ASSETS_PATH / asset_name
+            file_attachment = None
+            if asset_path.exists():
+                file_attachment = discord.File(str(asset_path), filename=asset_name)
+                embed.set_thumbnail(url=f"attachment://{asset_name}")
+            
+            embed.set_footer(text="Powered by Discord.gg/EmeraldServers")
+            return embed, file_attachment
+            
+        except Exception as e:
+            logger.error(f"Failed to build killfeed embed: {e}")
+            return cls._create_fallback_embed("Combat Event", "Combat activity recorded")
+
+    @classmethod
+    async def build_mission_embed(cls, data: Dict[str, Any]) -> Tuple[discord.Embed, Optional[discord.File]]:
+        """Build themed mission embed"""
+        try:
+            # Get themed message
+            title, description = cls._get_themed_message('mission_ready')
+            
+            # Create embed
+            level = data.get('level', 1)
+            if level >= 5:
+                color = 0xff0000  # Red for highest level
+            elif level >= 4:
+                color = 0xff8c00  # Orange for high level
+            elif level >= 3:
+                color = 0xffd700  # Gold for medium level
+            else:
+                color = cls.COLORS['mission']  # Default teal for low level
+            
+            embed = discord.Embed(
+                title=title,
+                description=description,
+                color=color,
+                timestamp=datetime.now(timezone.utc)
+            )
+            
+            # Add mission details
+            mission_id = data.get('mission_id', '')
+            mission_name = cls.normalize_mission_name(mission_id)
+            state = data.get('state', 'READY')
+            
+            embed.add_field(name="Mission", value=mission_name, inline=False)
+            embed.add_field(name="Difficulty Level", value=f"Level {level}", inline=True)
+            embed.add_field(name="Status", value=state.replace('_', ' ').title(), inline=True)
+            
+            # Set thumbnail
+            asset_path = cls.ASSETS_PATH / cls.ASSETS['mission']
+            file_attachment = None
+            if asset_path.exists():
+                file_attachment = discord.File(str(asset_path), filename=cls.ASSETS['mission'])
+                embed.set_thumbnail(url=f"attachment://{cls.ASSETS['mission']}")
+            
+            embed.set_footer(text="Powered by Discord.gg/EmeraldServers")
+            return embed, file_attachment
+            
+        except Exception as e:
+            logger.error(f"Failed to build mission embed: {e}")
+            return cls._create_fallback_embed("Mission Update", "Mission status changed")
+
     @classmethod
     async def build(cls, embed_type: str, data: Dict[str, Any]) -> Tuple[discord.Embed, Optional[discord.File]]:
         """
@@ -68,6 +349,28 @@ class EmbedFactory:
         Returns tuple of (embed, file_attachment)
         """
         try:
+            # Use specialized builders for main embed types
+            if embed_type == 'connection':
+                return await cls.build_connection_embed(data)
+            elif embed_type == 'killfeed' or embed_type == 'suicide' or embed_type == 'fall':
+                return await cls.build_killfeed_embed(data)
+            elif embed_type == 'mission':
+                return await cls.build_mission_embed(data)
+            
+            # For other embed types, get themed message
+            message_type_map = {
+                'airdrop': 'airdrop_incoming',
+                'helicrash': 'helicrash_event', 
+                'trader': 'trader_arrival'
+            }
+            
+            message_type = message_type_map.get(embed_type)
+            if message_type:
+                title, description = cls._get_themed_message(message_type)
+            else:
+                title = data.get('title', 'System Event')
+                description = data.get('description', 'Event occurred')
+            
             # Get asset info
             asset_filename = cls.ASSETS.get(embed_type, 'main.png')
             asset_path = cls.ASSETS_PATH / asset_filename
@@ -83,8 +386,8 @@ class EmbedFactory:
             # Create base embed
             color = cls.COLORS.get(embed_type, cls.COLORS['info'])
             embed = discord.Embed(
-                title=data.get('title', 'Emerald Killfeed'),
-                description=data.get('description', ''),
+                title=title,
+                description=description,
                 color=color,
                 timestamp=datetime.now(timezone.utc)
             )
@@ -94,17 +397,7 @@ class EmbedFactory:
                 embed.set_thumbnail(url=thumbnail_url)
             
             # Add fields based on embed type
-            if embed_type == 'connection':
-                cls._add_connection_fields(embed, data)
-            elif embed_type == 'mission':
-                cls._add_mission_fields(embed, data)
-            elif embed_type == 'killfeed':
-                cls._add_killfeed_fields(embed, data)
-            elif embed_type == 'suicide':
-                cls._add_suicide_fields(embed, data)
-            elif embed_type == 'fall':
-                cls._add_fall_fields(embed, data)
-            elif embed_type == 'airdrop':
+            if embed_type == 'airdrop':
                 cls._add_airdrop_fields(embed, data)
             elif embed_type == 'helicrash':
                 cls._add_helicrash_fields(embed, data)

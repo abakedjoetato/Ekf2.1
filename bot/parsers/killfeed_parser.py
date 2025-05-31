@@ -328,7 +328,7 @@ class KillfeedParser:
             logger.error(f"Failed to process kill event: {e}")
 
     async def send_killfeed_embed(self, guild_id: int, server_id: str, kill_data: Dict[str, Any]):
-        """Send killfeed embed to designated channel using EmbedFactory with server-specific routing"""
+        """Send killfeed embed to designated channel using themed EmbedFactory"""
         try:
             from ..utils.embed_factory import EmbedFactory
 
@@ -362,7 +362,7 @@ class KillfeedParser:
                 logger.warning(f"Killfeed channel {killfeed_channel_id} not found for guild {guild_id}")
                 return
 
-            # Get player stats for KDR display
+            # Get player stats for KDR display (if needed for regular kills)
             killer_stats = None
             victim_stats = None
 
@@ -391,41 +391,20 @@ class KillfeedParser:
                         'kdr': kills / max(deaths, 1) if deaths > 0 else float(kills)
                     }
 
-            # Prepare embed data based on death type
-            weapon = kill_data['weapon']
+            # Prepare comprehensive embed data for themed killfeed factory
+            embed_data = {
+                'is_suicide': kill_data['is_suicide'],
+                'weapon': kill_data['weapon'],
+                'killer': kill_data.get('killer', ''),
+                'victim': kill_data.get('victim', ''),
+                'player_name': kill_data.get('victim', ''),  # For suicide events
+                'distance': kill_data.get('distance', 0),
+                'killer_kdr': f"{killer_stats.get('kdr', 0.0):.2f}" if killer_stats else "0.00",
+                'victim_kdr': f"{victim_stats.get('kdr', 0.0):.2f}" if victim_stats else "0.00"
+            }
 
-            if kill_data['is_suicide']:
-                # Check if it's a falling death
-                if 'falling' in weapon.lower() or 'fall' in weapon.lower():
-                    embed_type = 'fall'
-                    embed_data = {
-                        'player_name': kill_data['victim'],
-                        'faction': None,  # Could be added later if faction data available
-                        'thumbnail_url': 'attachment://Falling.png'
-                    }
-                else:
-                    embed_type = 'suicide'
-                    embed_data = {
-                        'player_name': kill_data['victim'],
-                        'cause': weapon,
-                        'faction': None,  # Could be added later if faction data available
-                        'thumbnail_url': 'attachment://Suicide.png'
-                    }
-            else:
-                # Regular kill embed
-                embed_type = 'killfeed'
-                embed_data = {
-                    'killer_name': kill_data['killer'],
-                    'victim_name': kill_data['victim'],
-                    'killer_kdr': f"{killer_stats.get('kdr', 0.0):.2f}" if killer_stats else "0.00",
-                    'victim_kdr': f"{victim_stats.get('kdr', 0.0):.2f}" if victim_stats else "0.00",
-                    'weapon': weapon,
-                    'distance': f"{kill_data.get('distance', 0):.0f}",
-                    'thumbnail_url': 'attachment://Killfeed.png'
-                }
-
-            # Build embed using EmbedFactory
-            embed, file_attachment = await EmbedFactory.build(embed_type, embed_data)
+            # Build themed embed using specialized killfeed factory
+            embed, file_attachment = await EmbedFactory.build_killfeed_embed(embed_data)
 
             # Use advanced rate limiter for killfeed events
             from bot.utils.advanced_rate_limiter import MessagePriority

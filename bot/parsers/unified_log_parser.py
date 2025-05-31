@@ -980,39 +980,48 @@ class UnifiedLogParser:
 
         try:
             for embed in embeds:
-                # Determine channel type and embed type
-                channel_type = 'events'
+                # Determine channel type and embed type based on embed content
+                channel_type = 'events'  # Default
                 embed_type = 'general'
-
+                
+                # Check embed title and description for connection events
                 if embed.title:
                     title_lower = embed.title.lower()
-                    if any(word in title_lower for word in ['connect', 'disconnect', 'join', 'left']):
+                    if any(word in title_lower for word in ['reinforcements', 'extraction', 'arrive', 'confirmed', 'join', 'left']):
                         channel_type = 'connections'
                         embed_type = 'connection'
                     elif 'mission' in title_lower:
+                        channel_type = 'events'
                         embed_type = 'mission'
                     elif 'airdrop' in title_lower:
+                        channel_type = 'events'
                         embed_type = 'airdrop'
                     elif 'helicrash' in title_lower or 'helicopter' in title_lower:
+                        channel_type = 'events'
                         embed_type = 'helicrash'
                     elif 'trader' in title_lower:
+                        channel_type = 'events'
                         embed_type = 'trader'
 
-                # Get channel
+                # Get channel with proper fallback
                 channel_id = await self.get_channel_for_type(guild_id, server_id, channel_type)
                 if not channel_id:
-                    continue
+                    # Fallback to events channel if connections channel not found
+                    if channel_type == 'connections':
+                        channel_id = await self.get_channel_for_type(guild_id, server_id, 'events')
+                    if not channel_id:
+                        continue
 
                 channel = self.bot.get_channel(channel_id)
                 if channel:
                     try:
-                        # For connection embeds, preserve original embed data
+                        # Extract embed data and rebuild with EmbedFactory
                         if embed_type == 'connection':
                             # Extract connection data from embed fields
                             embed_data = {
                                 'title': embed.title,
                                 'description': embed.description,
-                                'player_name': 'Unknown',
+                                'player_name': 'Unknown Player',
                                 'platform': 'Unknown',
                                 'server_name': 'Unknown Server'
                             }
@@ -1026,40 +1035,54 @@ class UnifiedLogParser:
                                 elif field.name.lower() == 'server':
                                     embed_data['server_name'] = field.value
                             
-                            # Use EmbedFactory to build with proper attachment
-                            final_embed, file_attachment = await EmbedFactory.build(embed_type, embed_data)
-                        else:
-                            # For other embed types, use existing logic
+                            # Use EmbedFactory to build with themed messaging
+                            final_embed, file_attachment = await EmbedFactory.build_connection_embed(embed_data)
+                            
+                        elif embed_type == 'mission':
+                            # Extract mission data
                             embed_data = {
                                 'title': embed.title,
                                 'description': embed.description,
                                 'mission_id': '',
                                 'level': 1,
-                                'state': 'UNKNOWN',
-                                'location': 'Unknown'
+                                'state': 'UNKNOWN'
                             }
 
-                            # Extract data from embed fields if available
                             for field in embed.fields:
                                 if field.name.lower() == 'mission':
                                     embed_data['mission_id'] = field.value
-                                elif field.name.lower() == 'location':
-                                    embed_data['location'] = field.value
+                                elif 'level' in field.name.lower():
+                                    try:
+                                        level_str = field.value.replace('Level ', '')
+                                        embed_data['level'] = int(level_str)
+                                    except:
+                                        embed_data['level'] = 1
                                 elif field.name.lower() == 'status':
                                     embed_data['state'] = field.value.upper()
 
-                            # Use EmbedFactory to build with proper attachment
+                            final_embed, file_attachment = await EmbedFactory.build_mission_embed(embed_data)
+                            
+                        else:
+                            # For other embed types, use existing build method
+                            embed_data = {
+                                'title': embed.title,
+                                'description': embed.description,
+                                'location': 'Unknown'
+                            }
+
+                            for field in embed.fields:
+                                if field.name.lower() in ['location', 'crash site']:
+                                    embed_data['location'] = field.value
+
                             final_embed, file_attachment = await EmbedFactory.build(embed_type, embed_data)
 
                         # Set priority for rate limiter
                         from bot.utils.advanced_rate_limiter import MessagePriority
                         priority = MessagePriority.NORMAL
-                        if embed.title:
-                            title_lower = embed.title.lower()
-                            if any(word in title_lower for word in ['connect', 'disconnect']):
-                                priority = MessagePriority.HIGH
-                            elif 'mission' in title_lower and 'ready' in title_lower:
-                                priority = MessagePriority.HIGH
+                        if embed_type == 'connection':
+                            priority = MessagePriority.HIGH
+                        elif embed_type == 'mission' and 'ready' in embed.title.lower():
+                            priority = MessagePriority.HIGH
 
                         # Send with rate limiter if available
                         if hasattr(self.bot, 'advanced_rate_limiter'):
