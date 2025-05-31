@@ -702,8 +702,7 @@ class UnifiedLogParser:
                 if key.startswith(guild_prefix) and isinstance(session, dict) and session.get('status') == 'online':
                     active_players += 1
 
-            # Count```python
- queued players (those in 'queued' state but not joined)
+            # Count queued players (those in 'queued' state but not joined)
             for key, lifecycle in self.player_lifecycle.items():
                 if key.startswith(guild_prefix) and lifecycle.get('state') == 'queued':
                     queued_players += 1
@@ -1472,8 +1471,7 @@ class UnifiedLogParser:
                     recent_cursor = self.bot.db_manager.pvp_data.find({
                         'guild_id': int(guild_id),
                         'last_updated': {'$gte': week_ago},
-                        ```python
-'player_name': {'$exists': True, '$ne': None}
+                        'player_name': {'$exists': True, '$ne': None}
                     }).sort('last_updated', -1).limit(100)
 
                     async for pvp_doc in recent_cursor:
