@@ -351,7 +351,7 @@ class EmeraldKillfeedBot(commands.Bot):
             if hasattr(self, 'killfeed_parser') and self.killfeed_parser:
                 cleanup_tasks.append(self._cleanup_parser_connections(self.killfeed_parser, "killfeed"))
 
-            # Unified log parser cleanup
+            # Unified log parser cleanup  
             if hasattr(self, 'unified_log_parser') and self.unified_log_parser:
                 cleanup_tasks.append(self._cleanup_parser_connections(self.unified_log_parser, "unified_log"))
 
@@ -362,12 +362,30 @@ class EmeraldKillfeedBot(commands.Bot):
                     timeout=30
                 )
 
+            # Force cleanup of any remaining connections
+            await self._force_cleanup_all_connections()
+
             logger.info("Cleaned up all SFTP connections")
 
         except asyncio.TimeoutError:
             logger.warning("Connection cleanup timed out after 30 seconds")
         except Exception as e:
             logger.error(f"Failed to cleanup connections: {e}")
+
+    async def _force_cleanup_all_connections(self):
+        """Force cleanup of any remaining connections"""
+        try:
+            import gc
+            
+            # Clear any remaining parser state
+            if hasattr(self, 'unified_log_parser') and self.unified_log_parser:
+                self.unified_log_parser.reset_parser_state()
+            
+            # Force garbage collection
+            gc.collect()
+            
+        except Exception as e:
+            logger.error(f"Error in force cleanup: {e}")
 
     async def _cleanup_parser_connections(self, parser, parser_name: str):
         """Clean up connections for a specific parser"""
@@ -403,8 +421,8 @@ class EmeraldKillfeedBot(commands.Bot):
             # Initialize database manager with PHASE 1 architecture
             from bot.models.database import DatabaseManager
             self.db_manager = DatabaseManager(self.mongo_client)
-            # For backward compatibility
-            self.database = self.db_manager
+            # Ensure consistent access pattern
+            self.database = self.db_manager  # Legacy compatibility
 
             # Test connection
             await self.mongo_client.admin.command('ping')
@@ -426,6 +444,8 @@ class EmeraldKillfeedBot(commands.Bot):
             self.killfeed_parser = KillfeedParser(self)
             self.historical_parser = HistoricalParser(self)
             self.unified_log_parser = UnifiedLogParser(self)
+            # Ensure consistent parser access
+            self.log_parser = self.unified_log_parser  # Legacy compatibility
             logger.info("Parsers initialized (PHASE 2) + Unified Log Parser + Advanced Rate Limiter + Batch Sender")
 
             return True

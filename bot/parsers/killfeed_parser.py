@@ -581,11 +581,24 @@ class KillfeedParser:
             logger.error(f"Failed to schedule killfeed parser: {e}")
 
     async def cleanup_sftp_connections(self):
-        """Clean up idle SFTP connections"""
+        """Clean up idle SFTP connections with enhanced attribute validation"""
         try:
-            for pool_key, conn in list(self.sftp_pool.items()):
-                if conn._transport.is_closing() or not conn.is_client():
-                    del self.sftp_pool[pool_key]
-                    logger.info(f"Cleaned up stale SFTP connection: {pool_key}")
+            for pool_key, pool_entry in list(self.sftp_pool.items()):
+                try:
+                    conn = pool_entry.get('connection') if isinstance(pool_entry, dict) else pool_entry
+                    if hasattr(conn, 'is_closed') and conn.is_closed():
+                        del self.sftp_pool[pool_key]
+                        logger.debug(f"Cleaned up closed SFTP connection: {pool_key}")
+                    elif hasattr(conn, '_transport') and hasattr(conn._transport, 'is_closing') and conn._transport.is_closing():
+                        del self.sftp_pool[pool_key]
+                        logger.debug(f"Cleaned up closing SFTP connection: {pool_key}")
+                    elif hasattr(conn, 'is_client') and not conn.is_client():
+                        del self.sftp_pool[pool_key]
+                        logger.debug(f"Cleaned up non-client SFTP connection: {pool_key}")
+                except Exception as conn_error:
+                    # If we can't check the connection state, remove it
+                    logger.warning(f"Removing problematic SFTP connection {pool_key}: {conn_error}")
+                    if pool_key in self.sftp_pool:
+                        del self.sftp_pool[pool_key]
         except Exception as e:
             logger.error(f"Failed to cleanup SFTP connections: {e}")

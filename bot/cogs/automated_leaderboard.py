@@ -15,6 +15,94 @@ from bot.utils.embed_factory import EmbedFactory
 logger = logging.getLogger(__name__)
 
 class AutomatedLeaderboard(commands.Cog):
+    """Automated leaderboard posting system"""
+    
+    def __init__(self, bot):
+        self.bot = bot
+        self.post_leaderboards.start()
+    
+    def cog_unload(self):
+        self.post_leaderboards.cancel()
+    
+    @tasks.loop(minutes=30)
+    async def post_leaderboards(self):
+        """Post automated leaderboards every 30 minutes"""
+        try:
+            if not hasattr(self.bot, 'db_manager') or not self.bot.db_manager:
+                return
+            
+            # Get all guilds with configured channels
+            guilds_cursor = self.bot.db_manager.guilds.find({})
+            guilds_list = await guilds_cursor.to_list(length=None)
+            
+            for guild_doc in guilds_list:
+                guild_id = guild_doc['guild_id']
+                servers = guild_doc.get('servers', [])
+                
+                for server in servers:
+                    server_id = str(server.get('_id', ''))
+                    server_name = server.get('name', 'Unknown Server')
+                    
+                    # Get leaderboard channel
+                    channels = guild_doc.get('server_channels', {}).get(server_id, {})
+                    if not channels:
+                        channels = guild_doc.get('channels', {})
+                    
+                    leaderboard_channel_id = channels.get('leaderboard')
+                    if not leaderboard_channel_id:
+                        continue
+                    
+                    channel = self.bot.get_channel(leaderboard_channel_id)
+                    if not channel:
+                        continue
+                    
+                    try:
+                        # Get top players
+                        top_players = await self.bot.db_manager.get_leaderboard(
+                            guild_id, server_id, "kills", 10
+                        )
+                        
+                        if not top_players:
+                            continue
+                        
+                        # Create leaderboard embed
+                        embed_data = {
+                            'server_name': server_name,
+                            'leaderboard_type': 'kills',
+                            'players': top_players,
+                            'timestamp': datetime.now(timezone.utc)
+                        }
+                        
+                        embed, file_attachment = await EmbedFactory.build('leaderboard', embed_data)
+                        
+                        # Send via rate limiter
+                        if hasattr(self.bot, 'advanced_rate_limiter'):
+                            from bot.utils.advanced_rate_limiter import MessagePriority
+                            await self.bot.advanced_rate_limiter.queue_message(
+                                channel_id=channel.id,
+                                embed=embed,
+                                file=file_attachment,
+                                priority=MessagePriority.LOW
+                            )
+                        else:
+                            if file_attachment:
+                                await channel.send(embed=embed, file=file_attachment)
+                            else:
+                                await channel.send(embed=embed)
+                        
+                        logger.info(f"Posted automated leaderboard for {server_name}")
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to post leaderboard for {server_name}: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Error in automated leaderboard posting: {e}")
+    
+    @post_leaderboards.before_loop
+    async def before_post_leaderboards(self):
+        await self.bot.wait_until_ready()
+
+class AutomatedLeaderboard(commands.Cog):
     """Automated consolidated leaderboard system"""
 
     def __init__(self, bot):
@@ -447,7 +535,5 @@ class AutomatedLeaderboard(commands.Cog):
             return None
         except Exception as e:
             logger.error(f"Error getting player faction for {player_name}: {e}")
-            return None
-
-def setup(bot):
-    bot.add_cog(AutomatedLeaderboard(bot))
+            def setup(bot):
+    bot.add_cog(AutomatedLeaderboard(bot))aderboard(bot))

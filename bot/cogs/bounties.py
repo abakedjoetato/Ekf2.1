@@ -59,7 +59,7 @@ class Bounties(commands.Cog):
         Returns (character_name, discord_id) or None if not found.
         """
         guild_id = ctx.guild.id
-        
+
         if isinstance(target, discord.Member):
             # Discord user - must be linked
             player_data = await self.bot.db_manager.get_linked_player(guild_id, target.id)
@@ -67,28 +67,28 @@ class Bounties(commands.Cog):
                 return None
             # Use first linked character for bounty target
             return player_data['linked_characters'][0], target.id
-        
+
         elif isinstance(target, str):
             # Raw player name - search database directly (case-insensitive)
             target_name = target.strip()
             if not target_name:
                 return None
-            
+
             # Find player in PvP data (case-insensitive match)
             cursor = self.bot.db_manager.pvp_data.find({
                 'guild_id': guild_id,
                 'player_name': {'$regex': f'^{target_name}$', '$options': 'i'}
             })
-            
+
             async for player_doc in cursor:
                 actual_player_name = player_doc.get('player_name')
                 if actual_player_name:
                     # Find Discord ID for this character
                     discord_id = await self.find_discord_user_by_character(guild_id, actual_player_name)
                     return actual_player_name, discord_id
-            
+
             return None
-        
+
         return None
 
     async def add_wallet_event(self, guild_id: int, discord_id: int, 

@@ -1,359 +1,239 @@
-
-"""
-Advanced Rate Limiter - Prevents Discord API rate limits with intelligent queuing
-"""
-
+from enum import Enum
 import asyncio
 import logging
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Any, Optional, Callable
-from collections import defaultdict, deque
-from dataclasses import dataclass
-from enum import Enum
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Any
 import discord
 
 logger = logging.getLogger(__name__)
 
 class MessagePriority(Enum):
-    CRITICAL = 1    # Voice channel updates, critical alerts
-    HIGH = 2        # Player connections, important events
-    NORMAL = 3      # Mission events, regular killfeed
-    LOW = 4         # Bulk operations, non-essential updates
-
-@dataclass
-class QueuedMessage:
-    channel_id: int
-    embed: discord.Embed
-    file: Optional[discord.File]
-    content: Optional[str]
-    priority: MessagePriority
-    timestamp: datetime
-    retry_count: int = 0
-    callback: Optional[Callable] = None
+    """Message priority levels for rate limiting"""
+    LOW = 1
+    NORMAL = 2
+    HIGH = 3
+    CRITICAL = 4
 
 class AdvancedRateLimiter:
     """
-    Sophisticated rate limiting system with:
-    - Per-channel rate limiting with burst handling
-    - Priority-based message queuing
-    - Adaptive delays based on Discord's rate limit headers
-    - Intelligent batching and deduplication
-    - Automatic retry with exponential backoff
+    Advanced rate limiter with priority queues and error recovery
     """
 
     def __init__(self, bot):
         self.bot = bot
-        
-        # Rate limiting constants based on Discord API limits
-        self.GLOBAL_RATE_LIMIT = 50  # Global messages per second
-        self.CHANNEL_RATE_LIMIT = 5  # Messages per channel per 5 seconds
-        self.BURST_ALLOWANCE = 5   # Burst messages allowed
-        self.MESSAGE_DELAY = 0.2   # Minimum delay between messages
-        
-        # Coordination with other rate limiters
-        self.is_primary_limiter = True  # This instance manages all rate limiting
-        self.coordinated_systems = set()  # Track other systems to avoid conflicts
-        
-        # Tracking structures
-        self.channel_queues: Dict[int, List[QueuedMessage]] = defaultdict(list)
-        self.channel_last_sent: Dict[int, float] = {}
-        self.channel_message_count: Dict[int, deque] = defaultdict(lambda: deque(maxlen=self.CHANNEL_RATE_LIMIT))
-        self.global_message_times: deque = deque(maxlen=self.GLOBAL_RATE_LIMIT)
-        self.processing_channels: set = set()
-        
-        # Rate limit tracking from Discord headers
-        self.rate_limit_remaining: Dict[str, int] = {}
-        self.rate_limit_reset: Dict[str, float] = {}
-        self.global_rate_limit_reset: float = 0
-        
-        # Deduplication tracking
-        self.recent_embeds: Dict[int, List[str]] = defaultdict(list)
-        self.dedup_window = 30  # seconds
-        
-        # Start the processing task
-        self.processing_task = asyncio.create_task(self._process_queues())
+        self.channel_queues: Dict[int, List[Dict[str, Any]]] = {}
+        self.processing_locks: Dict[int, asyncio.Lock] = {}
+        self.last_send_times: Dict[int, datetime] = {}
+        self.error_counts: Dict[int, int] = {}
+        self.max_queue_size = 50  # Per channel
+        self.max_error_count = 5
 
-    async def queue_message(self, channel_id: int, embed: discord.Embed, 
+        # Start background processor
+        asyncio.create_task(self._background_processor())
+
+    async def queue_message(self, channel_id: int, embed: discord.Embed = None, 
                           file: discord.File = None, content: str = None,
-                          priority: MessagePriority = MessagePriority.NORMAL,
-                          callback: Callable = None):
-        """Queue a message with priority and deduplication"""
+                          priority: MessagePriority = MessagePriority.NORMAL):
+        """Queue a message for rate-limited sending with comprehensive validation"""
         try:
-            # Deduplication check
-            embed_hash = self._generate_embed_hash(embed)
-            channel_recent = self.recent_embeds[channel_id]
-            
-            # Remove old hashes
-            current_time = time.time()
-            self.recent_embeds[channel_id] = [
-                h for h in channel_recent 
-                if current_time - float(h.split('_')[0]) < self.dedup_window
-            ]
-            
-            # Check for duplicate
-            if embed_hash in self.recent_embeds[channel_id]:
-                logger.debug(f"Duplicate embed detected for channel {channel_id}, skipping")
-                return
-            
-            # Add to recent embeds
-            self.recent_embeds[channel_id].append(f"{current_time}_{embed_hash}")
-            
-            # Create queued message
-            message = QueuedMessage(
-                channel_id=channel_id,
-                embed=embed,
-                file=file,
-                content=content,
-                priority=priority,
-                timestamp=datetime.now(timezone.utc),
-                callback=callback
-            )
-            
-            # Insert by priority
+            # Validate channel exists and is accessible
+            if not await self._validate_channel(channel_id):
+                logger.warning(f"Channel {channel_id} not accessible, dropping message")
+                return False
+
+            # Validate message content
+            if not any([embed, file, content]):
+                logger.warning(f"No content provided for channel {channel_id}")
+                return False
+
+            # Initialize channel queue if needed
+            if channel_id not in self.channel_queues:
+                self.channel_queues[channel_id] = []
+                self.processing_locks[channel_id] = asyncio.Lock()
+                self.error_counts[channel_id] = 0
+
+            # Check queue size limits
+            if len(self.channel_queues[channel_id]) >= self.max_queue_size:
+                logger.warning(f"Queue full for channel {channel_id}, dropping oldest message")
+                self.channel_queues[channel_id].pop(0)
+
+            # Create message entry
+            message_entry = {
+                'embed': embed,
+                'file': file,
+                'content': content,
+                'priority': priority,
+                'timestamp': datetime.now(timezone.utc),
+                'retries': 0
+            }
+
+            # Insert based on priority
             queue = self.channel_queues[channel_id]
-            inserted = False
-            for i, existing in enumerate(queue):
-                if message.priority.value < existing.priority.value:
-                    queue.insert(i, message)
-                    inserted = True
+            insert_pos = len(queue)
+
+            for i, existing_msg in enumerate(queue):
+                if existing_msg['priority'].value < priority.value:
+                    insert_pos = i
                     break
-            
-            if not inserted:
-                queue.append(message)
-            
-            logger.debug(f"Queued {priority.name} message for channel {channel_id}")
-            
+
+            queue.insert(insert_pos, message_entry)
+            logger.debug(f"Queued message for channel {channel_id} with priority {priority.name}")
+            return True
+
         except Exception as e:
-            logger.error(f"Failed to queue message: {e}")
-
-    def _generate_embed_hash(self, embed: discord.Embed) -> str:
-        """Generate hash for embed deduplication"""
-        try:
-            hash_parts = [
-                embed.title or "",
-                embed.description or "",
-                str(len(embed.fields)),
-                embed.footer.text if embed.footer else ""
-            ]
-            return str(hash("_".join(hash_parts)))
-        except Exception:
-            return str(time.time())
-
-    async def _process_queues(self):
-        """Main processing loop with intelligent rate limiting"""
-        while True:
-            try:
-                current_time = time.time()
-                
-                # Check global rate limit
-                if self._is_globally_rate_limited(current_time):
-                    await asyncio.sleep(0.1)
-                    continue
-                
-                # Process channels by priority
-                processed_any = False
-                for channel_id in list(self.channel_queues.keys()):
-                    if not self.channel_queues[channel_id]:
-                        continue
-                    
-                    if channel_id in self.processing_channels:
-                        continue
-                    
-                    if self._can_send_to_channel(channel_id, current_time):
-                        asyncio.create_task(self._process_channel_queue(channel_id))
-                        processed_any = True
-                
-                # Adaptive sleep based on queue state
-                if not processed_any:
-                    await asyncio.sleep(0.1)
-                else:
-                    await asyncio.sleep(0.05)
-                
-            except Exception as e:
-                logger.error(f"Error in rate limiter processing: {e}")
-                await asyncio.sleep(1)
-
-    def _is_globally_rate_limited(self, current_time: float) -> bool:
-        """Check if we're hitting global rate limits"""
-        # Clean old timestamps
-        while self.global_message_times and current_time - self.global_message_times[0] > 1:
-            self.global_message_times.popleft()
-        
-        # Check if we're at the limit
-        if len(self.global_message_times) >= self.GLOBAL_RATE_LIMIT:
-            return True
-        
-        # Check Discord's global rate limit
-        if current_time < self.global_rate_limit_reset:
-            return True
-        
-        return False
-
-    def _can_send_to_channel(self, channel_id: int, current_time: float) -> bool:
-        """Check if we can send to a specific channel"""
-        # Clean old message times for this channel
-        channel_times = self.channel_message_count[channel_id]
-        while channel_times and current_time - channel_times[0] > 5:
-            channel_times.popleft()
-        
-        # Check channel rate limit
-        if len(channel_times) >= self.CHANNEL_RATE_LIMIT:
+            logger.error(f"Failed to queue message for channel {channel_id}: {e}")
             return False
-        
-        # Check minimum delay between messages
-        last_sent = self.channel_last_sent.get(channel_id, 0)
-        if current_time - last_sent < self.MESSAGE_DELAY:
-            return False
-        
-        return True
 
-    async def _process_channel_queue(self, channel_id: int):
-        """Process messages for a specific channel with comprehensive error handling"""
-        if channel_id in self.processing_channels:
-            return
-        
-        self.processing_channels.add(channel_id)
-        
+    async def _validate_channel(self, channel_id: int) -> bool:
+        """Validate that a channel exists and is accessible"""
         try:
+            if not self.bot:
+                return False
+
             channel = self.bot.get_channel(channel_id)
             if not channel:
-                logger.warning(f"Channel {channel_id} not found, clearing queue")
-                self.channel_queues[channel_id].clear()
-                return
-            
-            queue = self.channel_queues[channel_id]
-            while queue:
-                current_time = time.time()
-                
-                # Check if we can still send
-                if not self._can_send_to_channel(channel_id, current_time):
-                    break
-                
-                if self._is_globally_rate_limited(current_time):
-                    break
-                
-                message = queue.pop(0)
-                success = await self._send_message(channel, message)
-                
-                if success:
-                    # Update tracking
-                    self.global_message_times.append(current_time)
-                    self.channel_message_count[channel_id].append(current_time)
-                    self.channel_last_sent[channel_id] = current_time
-                    
-                    # Call callback if provided
-                    if message.callback:
-                        try:
-                            await message.callback()
-                        except Exception as e:
-                            logger.error(f"Callback error: {e}")
-                else:
-                    # Re-queue with increased retry count if failed
-                    message.retry_count += 1
-                    if message.retry_count < 3:
-                        queue.insert(0, message)
-                    else:
-                        logger.error(f"Message failed after 3 retries: {message.embed.title}")
-                
-                # Small delay between messages in same channel
-                await asyncio.sleep(0.1)
-        
-        except asyncio.CancelledError:
-            logger.debug(f"Channel queue processing cancelled for {channel_id}")
-            raise
-        except discord.HTTPException as e:
-            logger.error(f"Discord HTTP error in channel {channel_id}: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error processing channel {channel_id}: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-        finally:
-            self.processing_channels.discard(channel_id)
+                return False
 
-    async def _send_message(self, channel, message: QueuedMessage) -> bool:
-        """Send a single message with rate limit handling"""
-        try:
-            kwargs = {}
-            if message.embed:
-                kwargs['embed'] = message.embed
-            if message.file:
-                kwargs['file'] = message.file
-            if message.content:
-                kwargs['content'] = message.content
-            
-            await channel.send(**kwargs)
+            # Check basic permissions
+            if hasattr(channel, 'permissions_for') and hasattr(self.bot, 'user'):
+                permissions = channel.permissions_for(channel.guild.me if hasattr(channel, 'guild') else self.bot.user)
+                if not permissions.send_messages:
+                    return False
+
             return True
-            
-        except discord.HTTPException as e:
-            if e.status == 429:  # Rate limited
-                # Extract rate limit info
-                retry_after = getattr(e, 'retry_after', 1.0)
-                
-                if 'global' in str(e).lower():
-                    self.global_rate_limit_reset = time.time() + retry_after
-                    logger.warning(f"Global rate limit hit, waiting {retry_after}s")
-                else:
-                    logger.warning(f"Channel rate limit hit, waiting {retry_after}s")
-                
-                await asyncio.sleep(retry_after)
-                return False
-            else:
-                logger.error(f"HTTP error sending message: {e}")
-                return False
+
         except Exception as e:
-            logger.error(f"Unexpected error sending message: {e}")
+            logger.error(f"Channel validation failed for {channel_id}: {e}")
             return False
 
-    def get_queue_stats(self) -> Dict[str, Any]:
-        """Get comprehensive queue statistics"""
-        total_queued = sum(len(queue) for queue in self.channel_queues.values())
-        priority_counts = defaultdict(int)
-        
-        for queue in self.channel_queues.values():
-            for message in queue:
-                priority_counts[message.priority.name] += 1
-        
-        return {
-            'total_queued': total_queued,
-            'active_channels': len([q for q in self.channel_queues.values() if q]),
-            'processing_channels': len(self.processing_channels),
-            'priority_breakdown': dict(priority_counts),
-            'global_rate_limit_active': time.time() < self.global_rate_limit_reset,
-            'recent_global_messages': len(self.global_message_times)
-        }
+    async def _background_processor(self):
+        """Background task to process queued messages"""
+        while True:
+            try:
+                await asyncio.sleep(1)  # Check every second
+
+                for channel_id in list(self.channel_queues.keys()):
+                    try:
+                        await self._process_channel_queue(channel_id)
+                    except Exception as e:
+                        logger.error(f"Error processing queue for channel {channel_id}: {e}")
+                        # Increment error count and disable channel if too many errors
+                        self.error_counts[channel_id] = self.error_counts.get(channel_id, 0) + 1
+                        if self.error_counts[channel_id] > self.max_error_count:
+                            logger.warning(f"Disabling channel {channel_id} due to excessive errors")
+                            del self.channel_queues[channel_id]
+                            if channel_id in self.processing_locks:
+                                del self.processing_locks[channel_id]
+                            if channel_id in self.error_counts:
+                                del self.error_counts[channel_id]
+
+            except Exception as e:
+                logger.error(f"Background processor error: {e}")
+                await asyncio.sleep(5)  # Wait longer on major errors
+
+    async def _process_channel_queue(self, channel_id: int):
+        """Process messages for a specific channel with rate limiting"""
+        if channel_id not in self.channel_queues or not self.channel_queues[channel_id]:
+            return
+
+        # Acquire lock for this channel
+        if channel_id not in self.processing_locks:
+            self.processing_locks[channel_id] = asyncio.Lock()
+
+        async with self.processing_locks[channel_id]:
+            # Check rate limit
+            last_send = self.last_send_times.get(channel_id)
+            if last_send:
+                time_since_last = (datetime.now(timezone.utc) - last_send).total_seconds()
+                if time_since_last < 1.0:  # 1 second rate limit
+                    return
+
+            # Get next message
+            message_entry = self.channel_queues[channel_id].pop(0)
+
+            try:
+                channel = self.bot.get_channel(channel_id)
+                if not channel:
+                    logger.warning(f"Channel {channel_id} not found, dropping message")
+                    return
+
+                # Prepare send arguments
+                send_kwargs = {}
+                if message_entry['content']:
+                    send_kwargs['content'] = message_entry['content']
+                if message_entry['embed']:
+                    send_kwargs['embed'] = message_entry['embed']
+                if message_entry['file']:
+                    send_kwargs['file'] = message_entry['file']
+
+                # Send message
+                await channel.send(**send_kwargs)
+                self.last_send_times[channel_id] = datetime.now(timezone.utc)
+
+                # Reset error count on success
+                self.error_counts[channel_id] = 0
+
+                logger.debug(f"Successfully sent message to channel {channel_id}")
+
+            except discord.HTTPException as e:
+                if e.status == 429:  # Rate limited
+                    # Re-queue the message with increased retry count
+                    message_entry['retries'] += 1
+                    if message_entry['retries'] < 3:
+                        self.channel_queues[channel_id].insert(0, message_entry)
+                        logger.debug(f"Rate limited, re-queued message for channel {channel_id}")
+                    else:
+                        logger.warning(f"Dropping message for channel {channel_id} after max retries")
+                elif e.status == 403:  # Forbidden
+                    logger.warning(f"No permission to send to channel {channel_id}")
+                elif e.status == 404:  # Not found
+                    logger.warning(f"Channel {channel_id} not found")
+                else:
+                    logger.error(f"HTTP error sending to channel {channel_id}: {e}")
+
+            except Exception as e:
+                logger.error(f"Unexpected error sending to channel {channel_id}: {e}")
+                message_entry['retries'] += 1
+                if message_entry['retries'] < 3:
+                    self.channel_queues[channel_id].insert(0, message_entry)
 
     async def flush_all_queues(self):
-        """Force process all queues (for shutdown)"""
-        await asyncio.sleep(2)  # Let current processing finish
-        
-        tasks = []
-        for channel_id in list(self.channel_queues.keys()):
-            if self.channel_queues[channel_id] and channel_id not in self.processing_channels:
-                tasks.append(asyncio.create_task(self._process_channel_queue(channel_id)))
-        
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        """Flush all pending messages immediately"""
+        try:
+            logger.info("Flushing all rate limiter queues...")
 
-    def register_coordinated_system(self, system_name: str):
-        """Register a system that should coordinate with this rate limiter"""
-        self.coordinated_systems.add(system_name)
-        logger.debug(f"Registered coordinated system: {system_name}")
+            for channel_id in list(self.channel_queues.keys()):
+                try:
+                    while self.channel_queues.get(channel_id, []):
+                        await self._process_channel_queue(channel_id)
+                        await asyncio.sleep(0.1)  # Small delay between messages
+                except Exception as e:
+                    logger.error(f"Error flushing queue for channel {channel_id}: {e}")
 
-    def is_system_coordinated(self, system_name: str) -> bool:
-        """Check if a system is coordinated with this rate limiter"""
-        return system_name in self.coordinated_systems
+            logger.info("Rate limiter queue flush completed")
 
-    async def coordinate_with_batch_sender(self):
-        """Ensure coordination with batch sender to prevent double-queueing"""
-        if hasattr(self.bot, 'batch_sender'):
-            # Mark batch sender as coordinated
-            self.register_coordinated_system('batch_sender')
-            # Disable batch sender's independent rate limiting
-            if hasattr(self.bot.batch_sender, 'disable_independent_limiting'):
-                self.bot.batch_sender.disable_independent_limiting()
+        except Exception as e:
+            logger.error(f"Error flushing rate limiter queues: {e}")
 
-    def __del__(self):
-        """Cleanup on destruction"""
-        if hasattr(self, 'processing_task') and not self.processing_task.done():
-            self.processing_task.cancel()
+    def get_queue_status(self) -> Dict[str, Any]:
+        """Get current queue status for monitoring"""
+        try:
+            total_queued = sum(len(queue) for queue in self.channel_queues.values())
+            channel_stats = {}
+
+            for channel_id, queue in self.channel_queues.items():
+                channel_stats[channel_id] = {
+                    'queued_messages': len(queue),
+                    'error_count': self.error_counts.get(channel_id, 0),
+                    'last_send': self.last_send_times.get(channel_id)
+                }
+
+            return {
+                'total_queued': total_queued,
+                'active_channels': len(self.channel_queues),
+                'channel_stats': channel_stats
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting queue status: {e}")
+            return {'error': str(e)}

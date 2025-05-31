@@ -8,10 +8,10 @@ import logging
 import os
 import re
 import hashlib
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Set, Tuple
-import time
 
 import aiofiles
 import discord
@@ -1391,6 +1391,24 @@ class UnifiedLogParser:
                 'active_players_by_guild': {},
                 'status': 'error'
             }
+
+    async def cleanup_sftp_connections(self):
+        """Clean up idle SFTP connections with enhanced error handling"""
+        try:
+            for conn_key, conn in list(self.sftp_connections.items()):
+                try:
+                    if hasattr(conn, 'is_closed') and conn.is_closed():
+                        del self.sftp_connections[conn_key]
+                        logger.debug(f"Cleaned up closed SFTP connection: {conn_key}")
+                    elif hasattr(conn, '_transport') and hasattr(conn._transport, 'is_closing') and conn._transport.is_closing():
+                        del self.sftp_connections[conn_key] 
+                        logger.debug(f"Cleaned up closing SFTP connection: {conn_key}")
+                except Exception as conn_error:
+                    logger.warning(f"Error checking SFTP connection {conn_key}: {conn_error}")
+                    if conn_key in self.sftp_connections:
+                        del self.sftp_connections[conn_key]
+        except Exception as e:
+            logger.error(f"Failed to cleanup SFTP connections: {e}")
 
     def reset_parser_state(self):
         """Reset all parser state with proper cleanup"""

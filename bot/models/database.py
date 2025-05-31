@@ -553,13 +553,22 @@ class DatabaseManager:
     async def increment_player_kill(self, guild_id: int, server_id: str, player_name: str, distance: float = 0.0):
         """Increment player kill count and update streak/distance stats with enhanced distance tracking"""
         try:
+            # Ensure consistent types
+            guild_id = int(guild_id)
+            server_id = str(server_id)
+            player_name = str(player_name).strip()
             # PHASE 1 FIX: Ensure distance is properly validated and tracked
             if isinstance(distance, str):
                 try:
-                    distance = float(distance) if distance else 0.0
+                    # Handle empty strings and None values
+                    distance = float(distance) if distance and distance.strip() else 0.0
                 except (ValueError, TypeError):
                     distance = 0.0
-            distance = max(0.0, min(distance, 5000.0))  # Validate range
+            elif not isinstance(distance, (int, float)):
+                distance = 0.0
+            
+            # Validate range and handle edge cases
+            distance = max(0.0, min(float(distance), 5000.0))  # Validate range
             distance = round(distance, 1)  # Round for consistency
             
             # Get current stats to calculate new longest distance and streak
