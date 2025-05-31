@@ -7,6 +7,9 @@ import re
 import json
 import asyncio
 import logging
+import os
+import time
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any, Tuple, Set
 from pathlib import Path
@@ -226,7 +229,7 @@ class UnifiedLogParser:
                         await asyncio.sleep(2 ** attempt)
                 except asyncssh.Error as e:
                     # Sanitize error to prevent credential exposure
-                    safe_error = str(e).replace(password, "***").replace(username, "***")
+                    safe_error = str(e).replace(str(password) if password else "", "***").replace(str(username) if username else "", "***")
                     logger.warning(f"SSH error on attempt {attempt + 1}: {safe_error}")
                     if attempt < 2:
                         await asyncio.sleep(2 ** attempt)
@@ -620,6 +623,10 @@ class UnifiedLogParser:
 
         return embeds
 
+    def get_mission_level(self, mission_id: str) -> int:
+        """Determine mission difficulty level"""
+        return EmbedFactory.get_mission_level(mission_id)
+
     async def create_mission_embed(self, mission_id: str, state: str, respawn_time: Optional[int] = None) -> Optional[discord.Embed]:
         """Create mission embed"""
         try:
@@ -950,31 +957,50 @@ class UnifiedLogParser:
                 channel = self.bot.get_channel(channel_id)
                 if channel:
                     try:
-                        # Build proper embed with attachment using EmbedFactory
-                        embed_data = {
-                            'title': embed.title,
-                            'description': embed.description,
-                            'mission_id': '',
-                            'level': 1,
-                            'state': 'UNKNOWN',
-                            'player_name': 'Unknown',
-                            'player_id': 'Unknown',
-                            'location': 'Unknown'
-                        }
+                        # For connection embeds, preserve original embed data
+                        if embed_type == 'connection':
+                            # Extract connection data from embed fields
+                            embed_data = {
+                                'title': embed.title,
+                                'description': embed.description,
+                                'player_name': 'Unknown',
+                                'platform': 'Unknown',
+                                'server_name': 'Unknown Server'
+                            }
+                            
+                            # Extract data from embed fields
+                            for field in embed.fields:
+                                if field.name.lower() == 'player':
+                                    embed_data['player_name'] = field.value
+                                elif field.name.lower() == 'platform':
+                                    embed_data['platform'] = field.value
+                                elif field.name.lower() == 'server':
+                                    embed_data['server_name'] = field.value
+                            
+                            # Use EmbedFactory to build with proper attachment
+                            final_embed, file_attachment = await EmbedFactory.build(embed_type, embed_data)
+                        else:
+                            # For other embed types, use existing logic
+                            embed_data = {
+                                'title': embed.title,
+                                'description': embed.description,
+                                'mission_id': '',
+                                'level': 1,
+                                'state': 'UNKNOWN',
+                                'location': 'Unknown'
+                            }
 
-                        # Extract data from embed fields if available
-                        for field in embed.fields:
-                            if field.name.lower() == 'mission':
-                                embed_data['mission_id'] = field.value
-                            elif field.name.lower() == 'player':
-                                embed_data['player_name'] = field.value
-                            elif field.name.lower() == 'location':
-                                embed_data['location'] = field.value
-                            elif field.name.lower() == 'status':
-                                embed_data['state'] = field.value.upper()
+                            # Extract data from embed fields if available
+                            for field in embed.fields:
+                                if field.name.lower() == 'mission':
+                                    embed_data['mission_id'] = field.value
+                                elif field.name.lower() == 'location':
+                                    embed_data['location'] = field.value
+                                elif field.name.lower() == 'status':
+                                    embed_data['state'] = field.value.upper()
 
-                        # Use EmbedFactory to build with proper attachment
-                        final_embed, file_attachment = await EmbedFactory.build(embed_type, embed_data)
+                            # Use EmbedFactory to build with proper attachment
+                            final_embed, file_attachment = await EmbedFactory.build(embed_type, embed_data)
 
                         # Set priority for rate limiter
                         from bot.utils.advanced_rate_limiter import MessagePriority
