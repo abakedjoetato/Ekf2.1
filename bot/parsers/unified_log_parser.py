@@ -473,14 +473,22 @@ class UnifiedLogParser:
                     platform = lifecycle_data.get('platform', 'Unknown')
 
                     # Track active session
-                    self.player_sessions[session_key] = {
+                    session_data = {
                         'player_id': player_id,
                         'player_name': player_name,
                         'platform': platform,
                         'guild_id': guild_id,
+                        'server_id': server_id,
                         'joined_at': datetime.now(timezone.utc).isoformat(),
                         'status': 'online'
                     }
+                    self.player_sessions[session_key] = session_data
+                    
+                    # Persist to database
+                    if hasattr(self.bot, 'db_manager'):
+                        await self.bot.db_manager.save_player_session(
+                            int(guild_id), server_id, player_id, session_data
+                        )
 
                     # Mark voice channel for update
                     voice_channel_needs_update = True
@@ -514,6 +522,12 @@ class UnifiedLogParser:
                     if session_key in self.player_sessions:
                         self.player_sessions[session_key]['status'] = 'offline'
                         self.player_sessions[session_key]['left_at'] = datetime.now(timezone.utc).isoformat()
+                        
+                        # Remove from database (player is offline)
+                        if hasattr(self.bot, 'db_manager'):
+                            await self.bot.db_manager.remove_player_session(
+                                int(guild_id), server_id, player_id
+                            )
 
                     # Mark voice channel for update
                     voice_channel_needs_update = True
@@ -1167,7 +1181,7 @@ class UnifiedLogParser:
             logger.error(f"Failed to save persistent state: {e}")
 
     async def _load_persistent_state(self):
-        """Load parser state from database"""
+        """Load parser state and player sessions from database"""
         try:
             if not hasattr(self.bot, 'db_manager') or not self.bot.db_manager:
                 return
@@ -1177,6 +1191,8 @@ class UnifiedLogParser:
             guilds_list = await guilds_cursor.to_list(length=None)
 
             loaded_count = 0
+            session_count = 0
+            
             for guild_doc in guilds_list:
                 guild_id = guild_doc['guild_id']
                 servers = guild_doc.get('servers', [])
@@ -1185,6 +1201,7 @@ class UnifiedLogParser:
                     server_id = str(server.get('_id', ''))
                     if server_id:
                         try:
+                            # Load parser state
                             state = await self.bot.db_manager.get_parser_state(
                                 guild_id, server_id, "unified_log_parser"
                             )
@@ -1194,11 +1211,33 @@ class UnifiedLogParser:
                                 self.file_states[server_key] = state
                                 loaded_count += 1
 
+                            # Load active player sessions
+                            active_sessions = await self.bot.db_manager.get_active_player_sessions(guild_id, server_id)
+                            for session in active_sessions:
+                                player_id = session.get('player_id')
+                                if player_id:
+                                    session_key = f"{guild_id}_{player_id}"
+                                    self.player_sessions[session_key] = {
+                                        'player_id': player_id,
+                                        'player_name': session.get('player_name', f"Player{player_id[:8].upper()}"),
+                                        'platform': session.get('platform', 'Unknown'),
+                                        'guild_id': str(guild_id),
+                                        'server_id': server_id,
+                                        'joined_at': session.get('joined_at', datetime.now(timezone.utc).isoformat()),
+                                        'status': 'online'
+                                    }
+                                    session_count += 1
+
                         except Exception as e:
                             logger.error(f"Failed to load state for {guild_id}_{server_id}: {e}")
 
             if loaded_count > 0:
                 logger.info(f"✅ Loaded state for {loaded_count} servers")
+            if session_count > 0:
+                logger.info(f"✅ Restored {session_count} active player sessions")
+
+            # Clean up stale sessions
+            await self.bot.db_manager.cleanup_stale_sessions()
 
         except Exception as e:
             logger.error(f"Failed to load persistent state: {e}")

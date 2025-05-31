@@ -36,6 +36,7 @@ class DatabaseManager:
         self.kill_events = self.db.kill_events
         self.premium = self.db.premium_servers
         self.parser_states = self.db.parser_states
+        self.player_sessions = self.db.player_sessions
 
     async def initialize_indexes(self):
         """Create optimized database indexes for performance and prevent duplicates"""
@@ -85,6 +86,11 @@ class DatabaseManager:
             await self.parser_states.create_index([("guild_id", 1), ("server_id", 1), ("parser_type", 1)], unique=True)
             await self.parser_states.create_index([("parser_type", 1)])
             await self.parser_states.create_index([("last_updated", -1)])
+
+            # Player sessions collection indexes (server-scoped)
+            await self.player_sessions.create_index([("guild_id", 1), ("server_id", 1), ("player_id", 1)], unique=True)
+            await self.player_sessions.create_index([("guild_id", 1), ("status", 1)])
+            await self.player_sessions.create_index([("last_updated", -1)])
 
             logger.info("Database indexes created successfully")
 
@@ -946,3 +952,62 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to update server config: {e}")
             return False
+
+    # PLAYER SESSION PERSISTENCE
+    async def save_player_session(self, guild_id: int, server_id: str, player_id: str, session_data: Dict[str, Any]):
+        """Save player session state to database"""
+        try:
+            await self.db.player_sessions.update_one(
+                {
+                    "guild_id": guild_id,
+                    "server_id": server_id,
+                    "player_id": player_id
+                },
+                {
+                    "$set": {
+                        "guild_id": guild_id,
+                        "server_id": server_id,
+                        "player_id": player_id,
+                        "last_updated": datetime.now(timezone.utc),
+                        **session_data
+                    }
+                },
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"Failed to save player session: {e}")
+
+    async def get_active_player_sessions(self, guild_id: int, server_id: str = None) -> List[Dict[str, Any]]:
+        """Get active player sessions for guild/server"""
+        try:
+            query = {"guild_id": guild_id, "status": "online"}
+            if server_id:
+                query["server_id"] = server_id
+            
+            cursor = self.db.player_sessions.find(query)
+            return await cursor.to_list(length=None)
+        except Exception as e:
+            logger.error(f"Failed to get active player sessions: {e}")
+            return []
+
+    async def remove_player_session(self, guild_id: int, server_id: str, player_id: str):
+        """Remove player session from database"""
+        try:
+            await self.db.player_sessions.delete_one({
+                "guild_id": guild_id,
+                "server_id": server_id,
+                "player_id": player_id
+            })
+        except Exception as e:
+            logger.error(f"Failed to remove player session: {e}")
+
+    async def cleanup_stale_sessions(self, max_age_hours: int = 24):
+        """Clean up old player sessions"""
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+            result = await self.db.player_sessions.delete_many({
+                "last_updated": {"$lt": cutoff}
+            })
+            logger.debug(f"Cleaned up {result.deleted_count} stale player sessions")
+        except Exception as e:
+            logger.error(f"Failed to cleanup stale sessions: {e}")
