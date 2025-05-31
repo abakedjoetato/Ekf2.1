@@ -535,5 +535,7 @@ class AutomatedLeaderboard(commands.Cog):
             return None
         except Exception as e:
             logger.error(f"Error getting player faction for {player_name}: {e}")
-            def setup(bot):
-    bot.add_cog(AutomatedLeaderboard(bot))aderboard(bot))
+            return None
+
+def setup(bot):
+    bot.add_cog(AutomatedLeaderboard(bot))
