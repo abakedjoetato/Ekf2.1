@@ -8,9 +8,10 @@ import logging
 import os
 import csv
 import hashlib
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 
 import aiofiles
 import discord
@@ -181,12 +182,19 @@ class KillfeedParser:
                         ),
                         timeout=30
                     )
-                    self.sftp_pool[pool_key] = conn
+                    self.sftp_pool[pool_key] = {
+                        'connection': conn,
+                        'last_used': current_time,
+                        'created_at': current_time
+                    }
+                    self.connection_health_checks[pool_key] = current_time
                     logger.info(f"Created SFTP connection to {sftp_host}")
                     return conn
 
                 except (asyncio.TimeoutError, asyncssh.Error) as e:
-                    logger.warning(f"SFTP connection attempt {attempt + 1} failed: {e}")
+                    # Sanitize error message to prevent credential exposure
+                    safe_error = str(e).replace(sftp_password, "***").replace(sftp_username, "***")
+                    logger.warning(f"SFTP connection attempt {attempt + 1} failed: {safe_error}")
                     if attempt < 2:
                         await asyncio.sleep(2 ** attempt)  # Exponential backoff
 
@@ -301,11 +309,11 @@ class KillfeedParser:
 
             else:
                 # Handle actual PvP kill - proper streak and distance tracking
-                logger.debug(f"Processing kill: {kill_data['killer']} -> {kill_data['victim']} in server {server_id}")
+                logger.info(f"Processing kill: {kill_data['killer']} -> {kill_data['victim']} in server {server_id}")
 
                 # Update killer: increment kills and streak
                 await self.bot.db_manager.increment_player_kill(
-                    guild_id, server_id, kill_data.get('distance', 0)
+                    guild_id, server_id, kill_data['killer'], kill_data.get('distance', 0)
                 )
 
                 # Update victim: increment deaths and reset streak

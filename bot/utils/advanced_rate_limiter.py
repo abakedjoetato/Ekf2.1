@@ -209,7 +209,7 @@ class AdvancedRateLimiter:
         return True
 
     async def _process_channel_queue(self, channel_id: int):
-        """Process messages for a specific channel"""
+        """Process messages for a specific channel with comprehensive error handling"""
         if channel_id in self.processing_channels:
             return
         
@@ -259,8 +259,15 @@ class AdvancedRateLimiter:
                 # Small delay between messages in same channel
                 await asyncio.sleep(0.1)
         
+        except asyncio.CancelledError:
+            logger.debug(f"Channel queue processing cancelled for {channel_id}")
+            raise
+        except discord.HTTPException as e:
+            logger.error(f"Discord HTTP error in channel {channel_id}: {e}")
         except Exception as e:
-            logger.error(f"Error processing channel {channel_id}: {e}")
+            logger.error(f"Unexpected error processing channel {channel_id}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
         finally:
             self.processing_channels.discard(channel_id)
 

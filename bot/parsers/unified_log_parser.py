@@ -50,10 +50,11 @@ class UnifiedLogParser:
         self.patterns = self._compile_patterns()
         self.mission_mappings = self._get_mission_mappings()
 
-        # Configuration parameters
-        self.max_cache_size = 2000  # Max entries in player_name_cache
-        self.max_lifecycle_entries = 5000  # Max entries in player_lifecycle
-        self.max_session_entries = 5000  # Max entries in player_sessions
+        # Configuration parameters with memory bounds
+        self.max_cache_size = 1000  # Max entries in player_name_cache (reduced)
+        self.max_lifecycle_entries = 2000  # Max entries in player_lifecycle (reduced)
+        self.max_session_entries = 2000  # Max entries in player_sessions (reduced)
+        self.cleanup_interval = 300  # Cleanup every 5 minutes
 
         # Load state on startup
         asyncio.create_task(self._load_persistent_state())
@@ -160,7 +161,18 @@ class UnifiedLogParser:
         return EmbedFactory.get_mission_level(mission_id)
 
     async def get_sftp_connection(self, server_config: Dict[str, Any]) -> Optional[asyncssh.SSHClientConnection]:
-        """Get or create bulletproof SFTP connection"""
+        """
+        Get or create bulletproof SFTP connection with retry logic and connection pooling.
+        
+        Args:
+            server_config: Dictionary containing host, port, username, password
+            
+        Returns:
+            AsyncSSH connection object or None if connection fails
+            
+        Raises:
+            ConnectionError: If all connection attempts fail
+        """
         try:
             host = server_config.get('host')
             port = server_config.get('port', 22)
@@ -210,15 +222,17 @@ class UnifiedLogParser:
                     return conn
 
                 except asyncio.TimeoutError as e:
-                    logger.warning(f"SFTP timeout on attempt {attempt + 1}: {e}")
+                    logger.warning(f"SFTP timeout on attempt {attempt + 1} to {host}:{port}")
                     if attempt < 2:
                         await asyncio.sleep(2 ** attempt)
                 except asyncssh.Error as e:
-                    logger.warning(f"SSH error on attempt {attempt + 1}: {e}")
+                    # Sanitize error to prevent credential exposure
+                    safe_error = str(e).replace(password, "***").replace(username, "***")
+                    logger.warning(f"SSH error on attempt {attempt + 1}: {safe_error}")
                     if attempt < 2:
                         await asyncio.sleep(2 ** attempt)
                 except ConnectionError as e:
-                    logger.warning(f"Connection error on attempt {attempt + 1}: {e}")
+                    logger.warning(f"Connection error on attempt {attempt + 1} to {host}:{port}")
                     if attempt < 2:
                         await asyncio.sleep(2 ** attempt)
 
@@ -386,7 +400,7 @@ class UnifiedLogParser:
                         'state': 'queued',
                         'queued_at': datetime.now(timezone.utc).isoformat()
                     }
-                    logger.debug(f"👤 Player queued: {player_id} -> '{final_name}' on {platform}")
+                    logger.info(f"👤 Player queued: {player_id} -> '{final_name}' on {platform}")
 
                 # Join event - Player successfully registered
                 register_match = self.patterns['player_registered'].search(line)
@@ -433,8 +447,14 @@ class UnifiedLogParser:
                             'line': line
                         })
 
+            except ValueError as e:
+                logger.warning(f"Value error parsing line: {e}")
+                continue
+            except KeyError as e:
+                logger.warning(f"Missing key in regex match: {e}")
+                continue
             except Exception as e:
-                logger.error(f"Error collecting player events from line: {e}")
+                logger.error(f"Unexpected error collecting player events from line: {e}")
                 continue
 
         # Process player events in chronological order
@@ -1290,21 +1310,42 @@ class UnifiedLogParser:
             for key in to_remove:
                 del self.player_sessions[key]
 
-            # Limit cache sizes
+            # Aggressive memory management with bounds checking
             if len(self.player_name_cache) > self.max_cache_size:
-                # Keep only the most recent half
-                cache_items = list(self.player_name_cache.items())
-                self.player_name_cache = dict(cache_items[-self.max_cache_size//2:])
+                # Keep only the most recent entries with safety bounds
+                try:
+                    cache_items = list(self.player_name_cache.items())
+                    keep_count = min(self.max_cache_size // 2, len(cache_items))
+                    self.player_name_cache = dict(cache_items[-keep_count:]) if keep_count > 0 else {}
+                except Exception as e:
+                    logger.error(f"Error cleaning name cache: {e}")
+                    self.player_name_cache.clear()
 
             if len(self.player_lifecycle) > self.max_lifecycle_entries:
-                # Keep only the most recent entries
-                lifecycle_items = list(self.player_lifecycle.items())
-                self.player_lifecycle = dict(lifecycle_items[-self.max_lifecycle_entries//2:])
+                # Keep only active and recent entries
+                try:
+                    lifecycle_items = list(self.player_lifecycle.items())
+                    keep_count = min(self.max_lifecycle_entries // 2, len(lifecycle_items))
+                    self.player_lifecycle = dict(lifecycle_items[-keep_count:]) if keep_count > 0 else {}
+                except Exception as e:
+                    logger.error(f"Error cleaning lifecycle: {e}")
+                    self.player_lifecycle.clear()
 
             if len(self.player_sessions) > self.max_session_entries:
-                # Keep only the most recent entries
-                session_items = list(self.player_sessions.items())
-                self.player_sessions = dict(session_items[-self.max_session_entries//2:])
+                # Keep only active sessions
+                try:
+                    active_sessions = {k: v for k, v in self.player_sessions.items() if v.get('status') == 'online'}
+                    if len(active_sessions) < self.max_session_entries:
+                        self.player_sessions = active_sessions
+                    else:
+                        # If too many active sessions, keep most recent
+                        session_items = list(active_sessions.items())
+                        keep_count = min(self.max_session_entries // 2, len(session_items))
+                        self.player_sessions = dict(session_items[-keep_count:]) if keep_count > 0 else {}
+                except Exception as e:
+                    logger.error(f"Error cleaning sessions: {e}")
+                    # Emergency cleanup
+                    self.player_sessions = {k: v for k, v in self.player_sessions.items() if v.get('status') == 'online'}
 
             logger.debug(f"Memory cleanup completed: {len(to_remove)} lifecycle entries, cache size: {len(self.player_name_cache)}")
 
