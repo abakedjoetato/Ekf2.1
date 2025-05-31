@@ -321,9 +321,23 @@ class UnifiedLogParser:
 
         # Determine what to process
         if cold_start or last_processed == 0:
-            # Cold start: process all but don't generate embeds
+            # Cold start: process all lines to rebuild accurate state
             lines_to_process = lines
-            logger.info(f"🧊 Cold start: processing {len(lines)} lines")
+            logger.info(f"🧊 Cold start: processing {len(lines)} lines to rebuild player state")
+            
+            # Clear any existing sessions for this server during cold start
+            server_session_keys = [k for k in self.player_sessions.keys() if k.startswith(f"{guild_id}_")]
+            for session_key in server_session_keys:
+                session_data = self.player_sessions.get(session_key, {})
+                if session_data.get('server_id') == server_id:
+                    del self.player_sessions[session_key]
+                    
+            # Clear lifecycle data for this server
+            server_lifecycle_keys = [k for k in self.player_lifecycle.keys() if k.startswith(f"{guild_id}_")]
+            for lifecycle_key in server_lifecycle_keys:
+                del self.player_lifecycle[lifecycle_key]
+                
+            logger.info(f"🧹 Cleared existing session state for cold start")
         else:
             # Hot start: process only new lines
             if last_processed < len(lines):
@@ -367,11 +381,25 @@ class UnifiedLogParser:
                 await self._update_server_info(guild_id, server_id, extracted_max_players)
 
         # First pass: collect all player events with timestamps for sequential processing
+        player_event_dedup = {}  # Track events per player to prevent duplicates
+        
         for line in lines_to_process:
             try:
                 # Extract timestamp from line for ordering
                 timestamp_match = self.patterns['timestamp'].search(line)
                 line_timestamp = timestamp_match.group(1) if timestamp_match else None
+                
+                # Parse timestamp for proper ordering
+                parsed_timestamp = None
+                if line_timestamp:
+                    try:
+                        # Convert format "2025.05.30-12.20.00:000" to datetime
+                        dt_str = line_timestamp.replace('.', '-').replace(':', '.')
+                        parsed_timestamp = datetime.strptime(dt_str, "%Y-%m-%d-%H.%M.%S.%f")
+                    except:
+                        parsed_timestamp = datetime.now(timezone.utc)
+                else:
+                    parsed_timestamp = datetime.now(timezone.utc)
 
                 # Queue event - Extract EosID, Player Name, and Platform
                 queue_match = self.patterns['player_queue_join'].search(line)
@@ -394,60 +422,50 @@ class UnifiedLogParser:
                     except Exception:
                         final_name = player_name.strip()
 
-                    # Store in lifecycle with queue state
-                    lifecycle_key = f"{guild_id}_{player_id}"
-                    self.player_lifecycle[lifecycle_key] = {
-                        'name': final_name,
-                        'platform': platform,
-                        'state': 'queued',
-                        'queued_at': datetime.now(timezone.utc).isoformat()
-                    }
-                    logger.info(f"👤 Player queued: {player_id} -> '{final_name}' on {platform}")
+                    # Deduplication: Only add if this is the latest queue event for this player
+                    event_key = f"queue_{player_id}"
+                    if event_key not in player_event_dedup or parsed_timestamp > player_event_dedup[event_key]['timestamp']:
+                        player_event_dedup[event_key] = {
+                            'type': 'queue',
+                            'player_id': player_id,
+                            'player_name': final_name,
+                            'platform': platform,
+                            'timestamp': parsed_timestamp,
+                            'line_timestamp': line_timestamp,
+                            'line': line
+                        }
 
                 # Join event - Player successfully registered
                 register_match = self.patterns['player_registered'].search(line)
                 if register_match:
                     player_id = register_match.group(1)
-                    lifecycle_key = f"{guild_id}_{player_id}"
-
-                    # Check if we have queue data for this player
-                    if lifecycle_key in self.player_lifecycle:
-                        # Update state to joined
-                        self.player_lifecycle[lifecycle_key]['state'] = 'joined'
-                        self.player_lifecycle[lifecycle_key]['joined_at'] = datetime.now(timezone.utc).isoformat()
-                    else:
-                        # Player joined without queue data - create minimal record
-                        self.player_lifecycle[lifecycle_key] = {
-                            'name': f"Player{player_id[:8].upper()}",
-                            'platform': 'Unknown',
-                            'state': 'joined',
-                            'joined_at': datetime.now(timezone.utc).isoformat()
+                    
+                    # Add join event
+                    event_key = f"join_{player_id}"
+                    if event_key not in player_event_dedup or parsed_timestamp > player_event_dedup[event_key]['timestamp']:
+                        player_event_dedup[event_key] = {
+                            'type': 'join',
+                            'player_id': player_id,
+                            'timestamp': parsed_timestamp,
+                            'line_timestamp': line_timestamp,
+                            'line': line
                         }
-
-                    player_events.append({
-                        'type': 'join',
-                        'player_id': player_id,
-                        'timestamp': line_timestamp,
-                        'line': line
-                    })
 
                 # Disconnect event - Player disconnected
                 disconnect_match = self.patterns['player_disconnect'].search(line)
                 if disconnect_match:
                     player_id = disconnect_match.group(1)
-                    lifecycle_key = f"{guild_id}_{player_id}"
-
-                    # Only emit disconnect if player was previously joined
-                    if lifecycle_key in self.player_lifecycle and self.player_lifecycle[lifecycle_key].get('state') == 'joined':
-                        self.player_lifecycle[lifecycle_key]['state'] = 'disconnected'
-                        self.player_lifecycle[lifecycle_key]['disconnected_at'] = datetime.now(timezone.utc).isoformat()
-
-                        player_events.append({
+                    
+                    # Add disconnect event
+                    event_key = f"disconnect_{player_id}"
+                    if event_key not in player_event_dedup or parsed_timestamp > player_event_dedup[event_key]['timestamp']:
+                        player_event_dedup[event_key] = {
                             'type': 'disconnect',
                             'player_id': player_id,
-                            'timestamp': line_timestamp,
+                            'timestamp': parsed_timestamp,
+                            'line_timestamp': line_timestamp,
                             'line': line
-                        })
+                        }
 
             except ValueError as e:
                 logger.warning(f"Value error parsing line: {e}")
@@ -458,21 +476,47 @@ class UnifiedLogParser:
             except Exception as e:
                 logger.error(f"Unexpected error collecting player events from line: {e}")
                 continue
+                
+        # Convert deduplicated events to sorted list by timestamp
+        player_events = sorted(player_event_dedup.values(), key=lambda x: x['timestamp'])
 
-        # Process player events in chronological order
-        player_events.sort(key=lambda x: x['timestamp'] if x['timestamp'] else '')
-
+        # Process events in strict chronological order with proper state management
+        logger.info(f"🔄 Processing {len(player_events)} player events in chronological order")
+        
         for event in player_events:
             try:
-                if event['type'] == 'join':
-                    player_id = event['player_id']
-                    lifecycle_key = f"{guild_id}_{player_id}"
-                    session_key = f"{guild_id}_{player_id}"
-
-                    # Get player data from lifecycle
+                player_id = event['player_id']
+                lifecycle_key = f"{guild_id}_{player_id}"
+                session_key = f"{guild_id}_{player_id}"
+                
+                if event['type'] == 'queue':
+                    # Update lifecycle with queue information
+                    self.player_lifecycle[lifecycle_key] = {
+                        'name': event['player_name'],
+                        'platform': event['platform'],
+                        'state': 'queued',
+                        'queued_at': event['timestamp'].isoformat()
+                    }
+                    logger.debug(f"👤 Player queued: {player_id} -> '{event['player_name']}' on {event['platform']}")
+                    
+                elif event['type'] == 'join':
+                    # Get player data from lifecycle (if available from queue event)
                     lifecycle_data = self.player_lifecycle.get(lifecycle_key, {})
                     player_name = lifecycle_data.get('name', f"Player{player_id[:8].upper()}")
                     platform = lifecycle_data.get('platform', 'Unknown')
+
+                    # Update lifecycle state
+                    if lifecycle_key in self.player_lifecycle:
+                        self.player_lifecycle[lifecycle_key]['state'] = 'joined'
+                        self.player_lifecycle[lifecycle_key]['joined_at'] = event['timestamp'].isoformat()
+                    else:
+                        # Player joined without queue data - create minimal record
+                        self.player_lifecycle[lifecycle_key] = {
+                            'name': player_name,
+                            'platform': platform,
+                            'state': 'joined',
+                            'joined_at': event['timestamp'].isoformat()
+                        }
 
                     # Track active session
                     session_data = {
@@ -481,12 +525,12 @@ class UnifiedLogParser:
                         'platform': platform,
                         'guild_id': guild_id,
                         'server_id': server_id,
-                        'joined_at': datetime.now(timezone.utc).isoformat(),
+                        'joined_at': event['timestamp'].isoformat(),
                         'status': 'online'
                     }
                     self.player_sessions[session_key] = session_data
 
-                    # Persist to database
+                    # Persist to database with proper error handling
                     if hasattr(self.bot, 'db_manager'):
                         await self.bot.db_manager.save_player_session(
                             int(guild_id), server_id, player_id, session_data
@@ -509,21 +553,26 @@ class UnifiedLogParser:
                         embeds.append(final_embed)
 
                 elif event['type'] == 'disconnect':
-                    player_id = event['player_id']
-                    lifecycle_key = f"{guild_id}_{player_id}"
-                    session_key = f"{guild_id}_{player_id}"
-
-                    # Get player data from lifecycle or session
+                    # Only process disconnect if player was previously joined
                     lifecycle_data = self.player_lifecycle.get(lifecycle_key, {})
                     session_data = self.player_sessions.get(session_key, {})
+                    
+                    # Check if player was actually online before processing disconnect
+                    if (lifecycle_data.get('state') == 'joined' or 
+                        session_data.get('status') == 'online'):
+                        
+                        player_name = lifecycle_data.get('name') or session_data.get('player_name', f"Player{player_id[:8].upper()}")
+                        platform = lifecycle_data.get('platform') or session_data.get('platform', 'Unknown')
 
-                    player_name = lifecycle_data.get('name') or session_data.get('player_name', f"Player{player_id[:8].upper()}")
-                    platform = lifecycle_data.get('platform') or session_data.get('platform', 'Unknown')
+                        # Update lifecycle state
+                        if lifecycle_key in self.player_lifecycle:
+                            self.player_lifecycle[lifecycle_key]['state'] = 'disconnected'
+                            self.player_lifecycle[lifecycle_key]['disconnected_at'] = event['timestamp'].isoformat()
 
-                    # Update session status
-                    if session_key in self.player_sessions:
-                        self.player_sessions[session_key]['status'] = 'offline'
-                        self.player_sessions[session_key]['left_at'] = datetime.now(timezone.utc).isoformat()
+                        # Update session status
+                        if session_key in self.player_sessions:
+                            self.player_sessions[session_key]['status'] = 'offline'
+                            self.player_sessions[session_key]['left_at'] = event['timestamp'].isoformat()
 
                         # Remove from database (player is offline)
                         if hasattr(self.bot, 'db_manager'):
@@ -531,24 +580,26 @@ class UnifiedLogParser:
                                 int(guild_id), server_id, player_id
                             )
 
-                    # Mark voice channel for update
-                    voice_channel_needs_update = True
+                        # Mark voice channel for update
+                        voice_channel_needs_update = True
 
-                    # Create embed (only if not cold start)
-                    if not cold_start:
-                        embed_data = {
-                            'title': '🔻 Extraction Confirmed',
-                            'description': 'Player has left the server',
-                            'player_name': player_name,
-                            'platform': platform,
-                            'server_name': server_name
-                        }
+                        # Create embed (only if not cold start)
+                        if not cold_start:
+                            embed_data = {
+                                'title': '🔻 Extraction Confirmed',
+                                'description': 'Player has left the server',
+                                'player_name': player_name,
+                                'platform': platform,
+                                'server_name': server_name
+                            }
 
-                        final_embed, file_attachment = await EmbedFactory.build('connection', embed_data)
-                        embeds.append(final_embed)
+                            final_embed, file_attachment = await EmbedFactory.build('connection', embed_data)
+                            embeds.append(final_embed)
+                    else:
+                        logger.debug(f"Skipping disconnect for {player_id} - player was not joined")
 
             except Exception as e:
-                logger.error(f"Error processing player event: {e}")
+                logger.error(f"Error processing player event {event.get('type', 'unknown')} for {player_id}: {e}")
                 continue
 
         # Second pass: process non-player events

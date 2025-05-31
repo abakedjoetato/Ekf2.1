@@ -955,27 +955,55 @@ class DatabaseManager:
 
     # PLAYER SESSION PERSISTENCE
     async def save_player_session(self, guild_id: int, server_id: str, player_id: str, session_data: Dict[str, Any]):
-        """Save player session state to database"""
+        """Save player session state to database with bulletproof duplicate handling"""
         try:
-            await self.db.player_sessions.update_one(
+            # Ensure consistent types
+            guild_id = int(guild_id)
+            server_id = str(server_id)
+            player_id = str(player_id)
+            
+            session_doc = {
+                "guild_id": guild_id,
+                "server_id": server_id,
+                "player_id": player_id,
+                "last_updated": datetime.now(timezone.utc),
+                **session_data
+            }
+            
+            # First, try upsert operation
+            result = await self.db.player_sessions.update_one(
                 {
                     "guild_id": guild_id,
                     "server_id": server_id,
                     "player_id": player_id
                 },
-                {
-                    "$set": {
-                        "guild_id": guild_id,
-                        "server_id": server_id,
-                        "player_id": player_id,
-                        "last_updated": datetime.now(timezone.utc),
-                        **session_data
-                    }
-                },
+                {"$set": session_doc},
                 upsert=True
             )
+            
+            # If upsert succeeded, we're done
+            if result.acknowledged:
+                return
+                
         except Exception as e:
-            logger.error(f"Failed to save player session: {e}")
+            error_str = str(e)
+            # Handle duplicate key errors gracefully
+            if "E11000" in error_str and "duplicate key" in error_str:
+                try:
+                    # If duplicate key, just update the existing record
+                    await self.db.player_sessions.replace_one(
+                        {
+                            "guild_id": guild_id,
+                            "server_id": server_id,
+                            "player_id": player_id
+                        },
+                        session_doc
+                    )
+                    logger.debug(f"Updated existing player session for {player_id}")
+                except Exception as replace_error:
+                    logger.warning(f"Failed to replace player session: {replace_error}")
+            else:
+                logger.error(f"Failed to save player session: {e}")
 
     async def get_active_player_sessions(self, guild_id: int, server_id: str = None) -> List[Dict[str, Any]]:
         """Get active player sessions for guild/server"""
