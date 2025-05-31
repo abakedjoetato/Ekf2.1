@@ -1,0 +1,96 @@
+ EMERALD’S KILLFEED — PHASE 0 INITIALIZATION (TARBALL)
+
+🧩 TASK TYPE: SYSTEM INIT — ONE-TIME STARTUP SEQUENCE
+📍 This is a single-task atomic operation — all steps must complete together.
+
+
+---
+
+# [PHASE 0] — FULL PROJECT INITIALIZATION FROM TARBALL
+
+You are launching a Replit workspace session to initialize a full-featured multi-server, multi-guild Discord bot designed with Pycord 2.6.1. Your job is to extract, configure, and launch the bot in production mode. Follow all steps exactly.
+
+
+---
+
+✅ Objectives
+
+1. Install unzip and tar utilities if they are not already available in the Replit environment.
+
+
+2. Extract the project from the uploaded .tar.gz file located in attached_assets.
+
+Do not create a subdirectory structure (i.e., no nesting like /project/project/)
+
+Move all relevant files and folders from the unzipped path to the project root directory
+
+
+
+3. Remove unnecessary clutter:
+
+Delete empty folders
+
+Remove duplicate or nested structures
+
+Strip out non-project artifacts or residual scaffolding
+
+
+
+4. Log and identify core structures:
+
+Main bot entrypoint (class with main() or bot.run())
+
+All cog files
+
+Configuration files (config.json, .env, or similar)
+
+Command system and event handlers
+
+Database manager, SFTP connectors, parsing systems
+
+
+
+5. Inject Replit-provided secrets:
+Use os.getenv() to map in secrets already provided by the platform:
+
+BOT_TOKEN
+
+MONGO_URI
+
+RAILWAY_ENVIRONMENT (if applicable)
+
+
+
+6. Start the bot in production mode
+
+Use the Replit Run button to launch
+
+Wait for full connection and log verification
+
+Confirm:
+
+✅ Successful Discord gateway connection
+
+✅ All 11+ cogs load without error
+
+✅ Slash commands sync without rate limiting
+
+✅ No unresolved startup exceptions
+
+
+
+
+7. Do not continue to Phase 1 or other work until the bot successfully boots and confirms all systems are operational.
+
+
+
+
+---
+
+🧷 EXECUTION RULES
+
+✅ This is a single atomic task. No commits, checkpoints, or logs until the full phase is complete.
+✅ Do not output anything until the bot is verified to be online and functional.
+✅ Do not restructure code or assume missing files — use only what is extracted.
+✅ Strictly enforce Pycord 2.6.1 — reject any fallback to discord.py
+✅ Track internal progress using file state markers only, not memory or logs.
