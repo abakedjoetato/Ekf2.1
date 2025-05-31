@@ -623,9 +623,7 @@ class UnifiedLogParser:
 
         return embeds
 
-    def get_mission_level(self, mission_id: str) -> int:
-        """Determine mission difficulty level"""
-        return EmbedFactory.get_mission_level(mission_id)
+
 
     async def create_mission_embed(self, mission_id: str, state: str, respawn_time: Optional[int] = None) -> Optional[discord.Embed]:
         """Create mission embed"""
