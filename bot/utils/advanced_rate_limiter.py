@@ -33,25 +33,41 @@ class AdvancedRateLimiter:
 
     async def queue_message(self, channel_id: int, embed: discord.Embed = None, 
                           file: discord.File = None, content: str = None,
-                          priority: MessagePriority = MessagePriority.NORMAL):
-        """Queue a message for rate-limited sending with comprehensive validation"""
+                          priority: MessagePriority = MessagePriority.NORMAL) -> bool:
+        """Queue a message for sending with rate limiting"""
         try:
-            # Validate channel exists and is accessible
-            if not await self._validate_channel(channel_id):
-                logger.warning(f"Channel {channel_id} not accessible, dropping message")
+            if not content and not embed and not file:
+                logger.warning("Attempted to queue empty message")
                 return False
 
-            # Validate message content
-            if not any([embed, file, content]):
-                logger.warning(f"No content provided for channel {channel_id}")
+            # Validate channel exists and bot has permissions
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                logger.warning(f"Channel {channel_id} not found for message queue")
                 return False
+
+            # Check bot permissions
+            if isinstance(channel, discord.TextChannel):
+                if not channel.permissions_for(channel.guild.me).send_messages:
+                    logger.warning(f"No permission to send messages in channel {channel_id}")
+                    return False
+
+            message_data = {
+                'channel_id': channel_id,
+                'content': content,
+                'embed': embed,
+                'file': file,
+                'priority': priority,
+                'timestamp': datetime.now(timezone.utc),
+                'attempts': 0
+            }
 
             # Initialize channel queue if needed
             if channel_id not in self.channel_queues:
                 self.channel_queues[channel_id] = []
                 self.processing_locks[channel_id] = asyncio.Lock()
                 self.error_counts[channel_id] = 0
-
+            
             # Check queue size limits
             if len(self.channel_queues[channel_id]) >= self.max_queue_size:
                 logger.warning(f"Queue full for channel {channel_id}, dropping oldest message")
@@ -77,11 +93,12 @@ class AdvancedRateLimiter:
                     break
 
             queue.insert(insert_pos, message_entry)
-            logger.debug(f"Queued message for channel {channel_id} with priority {priority.name}")
+
+            logger.debug(f"Queued {priority.value} priority message for channel {channel_id}")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to queue message for channel {channel_id}: {e}")
+            logger.error(f"Failed to queue message: {e}")
             return False
 
     async def _validate_channel(self, channel_id: int) -> bool:

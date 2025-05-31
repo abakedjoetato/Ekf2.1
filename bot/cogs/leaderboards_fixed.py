@@ -437,5 +437,7 @@ class LeaderboardsFixed(commands.Cog):
 
         except Exception as e:
             logger.error(f"Failed to create themed leaderboard: {e}")
-            return Nonedef setup(bot):
+            return None
+
+def setup(bot):
     bot.add_cog(LeaderboardsFixed(bot))

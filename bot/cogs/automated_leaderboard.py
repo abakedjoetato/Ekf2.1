@@ -1,4 +1,3 @@
-
 """
 Emerald's Killfeed - Automated Consolidated Leaderboard
 Posts and updates consolidated leaderboards every 30 minutes
@@ -15,100 +14,12 @@ from bot.utils.embed_factory import EmbedFactory
 logger = logging.getLogger(__name__)
 
 class AutomatedLeaderboard(commands.Cog):
-    """Automated leaderboard posting system"""
-    
-    def __init__(self, bot):
-        self.bot = bot
-        self.post_leaderboards.start()
-    
-    def cog_unload(self):
-        self.post_leaderboards.cancel()
-    
-    @tasks.loop(minutes=30)
-    async def post_leaderboards(self):
-        """Post automated leaderboards every 30 minutes"""
-        try:
-            if not hasattr(self.bot, 'db_manager') or not self.bot.db_manager:
-                return
-            
-            # Get all guilds with configured channels
-            guilds_cursor = self.bot.db_manager.guilds.find({})
-            guilds_list = await guilds_cursor.to_list(length=None)
-            
-            for guild_doc in guilds_list:
-                guild_id = guild_doc['guild_id']
-                servers = guild_doc.get('servers', [])
-                
-                for server in servers:
-                    server_id = str(server.get('_id', ''))
-                    server_name = server.get('name', 'Unknown Server')
-                    
-                    # Get leaderboard channel
-                    channels = guild_doc.get('server_channels', {}).get(server_id, {})
-                    if not channels:
-                        channels = guild_doc.get('channels', {})
-                    
-                    leaderboard_channel_id = channels.get('leaderboard')
-                    if not leaderboard_channel_id:
-                        continue
-                    
-                    channel = self.bot.get_channel(leaderboard_channel_id)
-                    if not channel:
-                        continue
-                    
-                    try:
-                        # Get top players
-                        top_players = await self.bot.db_manager.get_leaderboard(
-                            guild_id, server_id, "kills", 10
-                        )
-                        
-                        if not top_players:
-                            continue
-                        
-                        # Create leaderboard embed
-                        embed_data = {
-                            'server_name': server_name,
-                            'leaderboard_type': 'kills',
-                            'players': top_players,
-                            'timestamp': datetime.now(timezone.utc)
-                        }
-                        
-                        embed, file_attachment = await EmbedFactory.build('leaderboard', embed_data)
-                        
-                        # Send via rate limiter
-                        if hasattr(self.bot, 'advanced_rate_limiter'):
-                            from bot.utils.advanced_rate_limiter import MessagePriority
-                            await self.bot.advanced_rate_limiter.queue_message(
-                                channel_id=channel.id,
-                                embed=embed,
-                                file=file_attachment,
-                                priority=MessagePriority.LOW
-                            )
-                        else:
-                            if file_attachment:
-                                await channel.send(embed=embed, file=file_attachment)
-                            else:
-                                await channel.send(embed=embed)
-                        
-                        logger.info(f"Posted automated leaderboard for {server_name}")
-                        
-                    except Exception as e:
-                        logger.error(f"Failed to post leaderboard for {server_name}: {e}")
-                        
-        except Exception as e:
-            logger.error(f"Error in automated leaderboard posting: {e}")
-    
-    @post_leaderboards.before_loop
-    async def before_post_leaderboards(self):
-        await self.bot.wait_until_ready()
-
-class AutomatedLeaderboard(commands.Cog):
     """Automated consolidated leaderboard system"""
 
     def __init__(self, bot):
         self.bot = bot
         self.message_cache = {}  # Store {guild_id: message_id}
-        
+
     async def cog_load(self):
         """Start the automated leaderboard task when cog loads"""
         logger.info("Starting automated leaderboard task...")
@@ -123,24 +34,24 @@ class AutomatedLeaderboard(commands.Cog):
         """Run automated leaderboard updates every 30 minutes"""
         try:
             logger.info("Running automated leaderboard update...")
-            
+
             # Get all guilds with leaderboard channels configured
             guilds_cursor = self.bot.db_manager.guilds.find({
                 "channels.leaderboard": {"$exists": True, "$ne": None},
                 "leaderboard_enabled": True
             })
-            
+
             guilds_with_leaderboard = await guilds_cursor.to_list(length=None)
-            
+
             for guild_config in guilds_with_leaderboard:
                 try:
                     await self.update_guild_leaderboard(guild_config)
                 except Exception as e:
                     guild_id = guild_config.get('guild_id', 'Unknown')
                     logger.error(f"Failed to update leaderboard for guild {guild_id}: {e}")
-                    
+
             logger.info(f"Automated leaderboard update completed for {len(guilds_with_leaderboard)} guilds")
-            
+
         except Exception as e:
             logger.error(f"Error in automated leaderboard task: {e}")
 
@@ -153,63 +64,56 @@ class AutomatedLeaderboard(commands.Cog):
         """Update leaderboard for a specific guild"""
         try:
             guild_id = guild_config['guild_id']
-            channel_id = guild_config['channels']['leaderboard']
-            
-            # Get the Discord guild and channel
             guild = self.bot.get_guild(guild_id)
             if not guild:
-                logger.warning(f"Guild {guild_id} not found")
                 return
-                
-            channel = guild.get_channel(channel_id)
+
+            # Get leaderboard channel
+            channels = guild_config.get('channels', {})
+            leaderboard_channel_id = channels.get('leaderboard')
+            if not leaderboard_channel_id:
+                return
+
+            channel = guild.get_channel(leaderboard_channel_id)
             if not channel:
-                logger.warning(f"Leaderboard channel {channel_id} not found in guild {guild_id}")
                 return
 
-            # Check if guild has premium access
-            has_premium = await self.check_premium_access(guild_id)
-            if not has_premium:
-                logger.warning(f"Guild {guild_id} doesn't have premium access for automated leaderboards")
-                return
-
-            # Get server configuration
+            # Get servers for this guild
             servers = guild_config.get('servers', [])
             if not servers:
-                logger.warning(f"No servers configured for guild {guild_id}")
-                return
-                
-            # Use first server for now
-            server_config = servers[0]
-            server_id = server_config.get('server_id', server_config.get('_id', 'default'))
-            server_name = server_config.get('name', f'Server {server_id}')
-
-            # Create consolidated leaderboard embed
-            embed, file = await self.create_consolidated_leaderboard(guild_id, server_id, server_name)
-            
-            if not embed:
-                logger.warning(f"Failed to create leaderboard for guild {guild_id}")
                 return
 
-            # Try to edit existing message first
-            existing_message_id = self.message_cache.get(guild_id)
-            if existing_message_id:
+            # Process each server
+            for server_config in servers:
+                server_id = str(server_config.get('_id', ''))
+                server_name = server_config.get('name', 'Unknown Server')
+
                 try:
-                    existing_message = await channel.fetch_message(existing_message_id)
-                    files = [file] if file else []
-                    await existing_message.edit(embed=embed, attachments=files)
-                    logger.info(f"Updated existing leaderboard message for guild {guild_id}")
-                    return
-                except discord.NotFound:
-                    # Message was deleted, we'll create a new one
-                    logger.info(f"Existing message not found for guild {guild_id}, creating new one")
-                except Exception as e:
-                    logger.error(f"Failed to edit existing message for guild {guild_id}: {e}")
+                    # Create consolidated leaderboard
+                    embed, file_attachment = await self.create_consolidated_leaderboard(
+                        guild_id, server_id, server_name
+                    )
 
-            # Create new message
-            files = [file] if file else []
-            new_message = await channel.send(embed=embed, files=files)
-            self.message_cache[guild_id] = new_message.id
-            logger.info(f"Created new leaderboard message for guild {guild_id}")
+                    if embed:
+                        # Send via rate limiter if available
+                        if hasattr(self.bot, 'advanced_rate_limiter') and self.bot.advanced_rate_limiter:
+                            from bot.utils.advanced_rate_limiter import MessagePriority
+                            await self.bot.advanced_rate_limiter.queue_message(
+                                channel_id=channel.id,
+                                embed=embed,
+                                file=file_attachment,
+                                priority=MessagePriority.LOW
+                            )
+                        else:
+                            if file_attachment:
+                                await channel.send(embed=embed, file=file_attachment)
+                            else:
+                                await channel.send(embed=embed)
+
+                        logger.info(f"Posted automated leaderboard for {server_name}")
+
+                except Exception as e:
+                    logger.error(f"Failed to post leaderboard for {server_name}: {e}")
 
         except Exception as e:
             logger.error(f"Failed to update guild leaderboard: {e}")
@@ -220,15 +124,15 @@ class AutomatedLeaderboard(commands.Cog):
             guild_doc = await self.bot.db_manager.get_guild(guild_id)
             if not guild_doc:
                 return False
-            
+
             servers = guild_doc.get('servers', [])
             for server_config in servers:
                 server_id = server_config.get('server_id', server_config.get('_id', 'default'))
                 if await self.bot.db_manager.is_premium_server(guild_id, server_id):
                     return True
-            
+
             return False
-            
+
         except Exception as e:
             logger.error(f"Failed to check premium access: {e}")
             return False
@@ -240,107 +144,52 @@ class AutomatedLeaderboard(commands.Cog):
             title = f"📊 CONSOLIDATED LEADERBOARD - {server_name}"
             description = "Top performers across all categories"
 
-            # Get data for each category
-            kills_data = await self.get_top_kills(guild_id, 5)
-            kdr_data = await self.get_top_kdr(guild_id, 3)
-            weapons_data = await self.get_top_weapons(guild_id, 3)
-            distance_data = await self.get_top_distance(guild_id, 3)
-            deaths_data = await self.get_top_deaths(guild_id, 3)
-            faction_data = await self.get_top_faction(guild_id, 1)
+            # Get top players for each category
+            top_killers = await self.get_top_kills(guild_id, 3)
+            top_kdr = await self.get_top_kdr(guild_id, 3)
+            top_distance = await self.get_top_distance(guild_id, 3)
 
-            # Build consolidated rankings text
-            rankings_sections = []
+            # Build consolidated rankings
+            sections = []
 
-            # Top Killers (5)
-            if kills_data:
-                kills_text = []
-                for i, player in enumerate(kills_data, 1):
-                    player_name = player.get('player_name', 'Unknown')
+            if top_killers:
+                killer_lines = []
+                for i, player in enumerate(top_killers, 1):
+                    name = player.get('player_name', 'Unknown')
                     kills = player.get('kills', 0)
-                    faction = await self.get_player_faction(guild_id, player_name)
-                    faction_tag = f" [{faction}]" if faction else ""
-                    kills_text.append(f"**{i}.** {player_name}{faction_tag} — {kills:,} Kills")
-                rankings_sections.append(f"**TOP KILLERS**\n" + "\n".join(kills_text))
+                    killer_lines.append(f"**{i}.** {name} — {kills:,} Kills")
+                sections.append(f"**🔥 TOP KILLERS**\n" + "\n".join(killer_lines))
 
-            # Top KDR (3)
-            if kdr_data:
-                kdr_text = []
-                for i, player in enumerate(kdr_data, 1):
-                    player_name = player.get('player_name', 'Unknown')
+            if top_kdr:
+                kdr_lines = []
+                for i, player in enumerate(top_kdr, 1):
+                    name = player.get('player_name', 'Unknown')
                     kdr = player.get('kdr', 0.0)
-                    kills = player.get('kills', 0)
-                    deaths = player.get('deaths', 0)
-                    faction = await self.get_player_faction(guild_id, player_name)
-                    faction_tag = f" [{faction}]" if faction else ""
-                    kdr_text.append(f"**{i}.** {player_name}{faction_tag} — KDR: {kdr:.2f} ({kills:,}/{deaths:,})")
-                rankings_sections.append(f"**EFFICIENCY MASTERS**\n" + "\n".join(kdr_text))
+                    kdr_lines.append(f"**{i}.** {name} — {kdr:.2f} KDR")
+                sections.append(f"**⚡ BEST KDR**\n" + "\n".join(kdr_lines))
 
-            # Top Weapons (3)
-            if weapons_data:
-                weapons_text = []
-                for i, weapon in enumerate(weapons_data, 1):
-                    weapon_name = weapon.get('_id', 'Unknown')
-                    kills = weapon.get('kills', 0)
-                    top_killer = weapon.get('top_killer', 'Unknown')
-                    faction = await self.get_player_faction(guild_id, top_killer)
-                    faction_tag = f" [{faction}]" if faction else ""
-                    weapons_text.append(f"**{i}.** {weapon_name} — {kills:,} Kills | Top: {top_killer}{faction_tag}")
-                rankings_sections.append(f"**DEADLIEST WEAPONS**\n" + "\n".join(weapons_text))
-
-            # Top Distance (3)
-            if distance_data:
-                distance_text = []
-                for i, player in enumerate(distance_data, 1):
-                    player_name = player.get('player_name', 'Unknown')
-                    best_distance = player.get('personal_best_distance', 0.0)
-                    faction = await self.get_player_faction(guild_id, player_name)
-                    faction_tag = f" [{faction}]" if faction else ""
-                    
-                    if best_distance >= 1000:
-                        distance_str = f"{best_distance/1000:.1f}km"
+            if top_distance:
+                distance_lines = []
+                for i, player in enumerate(top_distance, 1):
+                    name = player.get('player_name', 'Unknown')
+                    distance = player.get('personal_best_distance', 0.0)
+                    if distance >= 1000:
+                        dist_str = f"{distance/1000:.1f}km"
                     else:
-                        distance_str = f"{best_distance:.0f}m"
-                    
-                    distance_text.append(f"**{i}.** {player_name}{faction_tag} — {distance_str}")
-                rankings_sections.append(f"**PRECISION SNIPERS**\n" + "\n".join(distance_text))
+                        dist_str = f"{distance:.0f}m"
+                    distance_lines.append(f"**{i}.** {name} — {dist_str}")
+                sections.append(f"**🎯 LONGEST SHOTS**\n" + "\n".join(distance_lines))
 
-            # Top Deaths (3)
-            if deaths_data:
-                deaths_text = []
-                for i, player in enumerate(deaths_data, 1):
-                    player_name = player.get('player_name', 'Unknown')
-                    deaths = player.get('deaths', 0)
-                    faction = await self.get_player_faction(guild_id, player_name)
-                    faction_tag = f" [{faction}]" if faction else ""
-                    deaths_text.append(f"**{i}.** {player_name}{faction_tag} — {deaths:,} Deaths")
-                rankings_sections.append(f"**MOST FALLEN**\n" + "\n".join(deaths_text))
+            if not sections:
+                return None, None
 
-            # Top Faction (1)
-            if faction_data:
-                faction_info = faction_data[0]
-                faction_name = faction_info.get('faction_name', 'Unknown')
-                kills = faction_info.get('kills', 0)
-                deaths = faction_info.get('deaths', 0)
-                members = faction_info.get('member_count', 0)
-                kdr = kills / max(deaths, 1) if deaths > 0 else kills
-                
-                faction_text = f"**1.** [{faction_name}] — {kills:,} Kills | KDR: {kdr:.2f} | {members} Members"
-                rankings_sections.append(f"**DOMINANT FACTION**\n" + faction_text)
-
-            # Combine all sections
-            combined_rankings = "\n\n".join(rankings_sections)
-
-            # Calculate totals
-            total_kills = sum(p.get('kills', 0) for p in kills_data) if kills_data else 0
-            total_deaths = sum(p.get('deaths', 0) for p in deaths_data) if deaths_data else 0
-
-            # Create embed using EmbedFactory
+            # Use EmbedFactory for proper theming
             embed_data = {
                 'title': title,
                 'description': description,
-                'rankings': combined_rankings[:4000],  # Discord embed limit
-                'total_kills': total_kills,
-                'total_deaths': total_deaths,
+                'rankings': "\n\n".join(sections),
+                'total_kills': sum(p.get('kills', 0) for p in top_killers),
+                'total_deaths': sum(p.get('deaths', 0) for p in top_killers),
                 'stat_type': 'consolidated',
                 'style_variant': 'consolidated',
                 'server_name': server_name,
@@ -348,11 +197,11 @@ class AutomatedLeaderboard(commands.Cog):
             }
 
             embed, file = await EmbedFactory.build('leaderboard', embed_data)
-            
+
             # Add update timestamp to footer
             timestamp_str = datetime.now(timezone.utc).strftime("%m/%d/%Y %I:%M %p UTC")
             embed.set_footer(text=f"Last Updated: {timestamp_str} | Powered by Discord.gg/EmeraldServers")
-            
+
             return embed, file
 
         except Exception as e:
@@ -379,16 +228,74 @@ class AutomatedLeaderboard(commands.Cog):
                 "kills": {"$gte": 1}
             }).limit(50)
             all_players = await cursor.to_list(length=None)
-            
-            # Calculate KDR and sort
+
+            # Calculate KDR and sort in Python
             for player in all_players:
                 kills = player.get('kills', 0)
                 deaths = player.get('deaths', 0)
                 player['kdr'] = kills / max(deaths, 1) if deaths > 0 else float(kills)
-            
-            return sorted(all_players, key=lambda x: x['kdr'], reverse=True)[:limit]
+
+            players = sorted(all_players, key=lambda x: x['kdr'], reverse=True)[:limit]
+            return players
         except Exception as e:
             logger.error(f"Failed to get top KDR: {e}")
+            return []
+
+    async def get_top_distance(self, guild_id: int, limit: int) -> List[Dict[str, Any]]:
+        """Get top distance players"""
+        try:
+            cursor = self.bot.db_manager.pvp_data.find({
+                "guild_id": guild_id,
+                "personal_best_distance": {"$gt": 0}
+            }).sort("personal_best_distance", -1).limit(limit)
+            return await cursor.to_list(length=None)
+        except Exception as e:
+            logger.error(f"Failed to get top distance: {e}")
+            return []
+
+    async def get_player_faction(self, guild_id: int, player_name: str) -> Optional[str]:
+        """Get player's faction tag if they have one"""
+        try:
+            # First find the Discord ID for this player name
+            player_link = await self.bot.db_manager.players.find_one({
+                "guild_id": guild_id,
+                "linked_characters": player_name
+            })
+
+            if not player_link:
+                return None
+
+            discord_id = player_link.get('discord_id')
+            if not discord_id:
+                return None
+
+            # Now look up faction using Discord ID
+            faction_doc = await self.bot.db_manager.factions.find_one({
+                "guild_id": guild_id,
+                "members": {"$in": [discord_id]}
+            })
+
+            if faction_doc:
+                faction_tag = faction_doc.get('faction_tag')
+                if faction_tag:
+                    return faction_tag
+                return faction_doc.get('faction_name')
+
+            return None
+        except Exception as e:
+            logger.error(f"Error getting player faction for {player_name}: {e}")
+            return None
+
+    async def get_top_deaths(self, guild_id: int, limit: int) -> List[Dict[str, Any]]:
+        """Get players with most deaths"""
+        try:
+            cursor = self.bot.db_manager.pvp_data.find({
+                "guild_id": guild_id,
+                "deaths": {"$gt": 0}
+            }).sort("deaths", -1).limit(limit)
+            return await cursor.to_list(length=None)
+        except Exception as e:
+            logger.error(f"Failed to get top deaths: {e}")
             return []
 
     async def get_top_weapons(self, guild_id: int, limit: int) -> List[Dict[str, Any]]:
@@ -424,30 +331,6 @@ class AutomatedLeaderboard(commands.Cog):
             return weapons_data
         except Exception as e:
             logger.error(f"Failed to get top weapons: {e}")
-            return []
-
-    async def get_top_distance(self, guild_id: int, limit: int) -> List[Dict[str, Any]]:
-        """Get top distance kills"""
-        try:
-            cursor = self.bot.db_manager.pvp_data.find({
-                "guild_id": guild_id,
-                "personal_best_distance": {"$gt": 0}
-            }).sort("personal_best_distance", -1).limit(limit)
-            return await cursor.to_list(length=None)
-        except Exception as e:
-            logger.error(f"Failed to get top distance: {e}")
-            return []
-
-    async def get_top_deaths(self, guild_id: int, limit: int) -> List[Dict[str, Any]]:
-        """Get players with most deaths"""
-        try:
-            cursor = self.bot.db_manager.pvp_data.find({
-                "guild_id": guild_id,
-                "deaths": {"$gt": 0}
-            }).sort("deaths", -1).limit(limit)
-            return await cursor.to_list(length=None)
-        except Exception as e:
-            logger.error(f"Failed to get top deaths: {e}")
             return []
 
     async def get_top_faction(self, guild_id: int, limit: int) -> List[Dict[str, Any]]:
@@ -505,37 +388,6 @@ class AutomatedLeaderboard(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to get top faction: {e}")
             return []
-
-    async def get_player_faction(self, guild_id: int, player_name: str) -> Optional[str]:
-        """Get player's faction tag"""
-        try:
-            player_link = await self.bot.db_manager.players.find_one({
-                "guild_id": guild_id,
-                "linked_characters": player_name
-            })
-            
-            if not player_link:
-                return None
-                
-            discord_id = player_link.get('discord_id')
-            if not discord_id:
-                return None
-            
-            faction_doc = await self.bot.db_manager.factions.find_one({
-                "guild_id": guild_id,
-                "members": {"$in": [discord_id]}
-            })
-            
-            if faction_doc:
-                faction_tag = faction_doc.get('faction_tag')
-                if faction_tag:
-                    return faction_tag
-                return faction_doc.get('faction_name')
-            
-            return None
-        except Exception as e:
-            logger.error(f"Error getting player faction for {player_name}: {e}")
-            return None
 
 def setup(bot):
     bot.add_cog(AutomatedLeaderboard(bot))

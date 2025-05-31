@@ -3,15 +3,14 @@ Emerald's Killfeed - Unified Log Parser System
 BULLETPROOF VERSION - Complete overhaul for 100% reliability
 """
 
+import re
+import json
 import asyncio
 import logging
-import os
-import re
-import hashlib
-import time
 from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional, Any, Tuple, Set
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Set, Tuple
+import traceback
 
 import aiofiles
 import discord
@@ -163,13 +162,13 @@ class UnifiedLogParser:
     async def get_sftp_connection(self, server_config: Dict[str, Any]) -> Optional[asyncssh.SSHClientConnection]:
         """
         Get or create bulletproof SFTP connection with retry logic and connection pooling.
-        
+
         Args:
             server_config: Dictionary containing host, port, username, password
-            
+
         Returns:
             AsyncSSH connection object or None if connection fails
-            
+
         Raises:
             ConnectionError: If all connection attempts fail
         """
@@ -483,7 +482,7 @@ class UnifiedLogParser:
                         'status': 'online'
                     }
                     self.player_sessions[session_key] = session_data
-                    
+
                     # Persist to database
                     if hasattr(self.bot, 'db_manager'):
                         await self.bot.db_manager.save_player_session(
@@ -522,7 +521,7 @@ class UnifiedLogParser:
                     if session_key in self.player_sessions:
                         self.player_sessions[session_key]['status'] = 'offline'
                         self.player_sessions[session_key]['left_at'] = datetime.now(timezone.utc).isoformat()
-                        
+
                         # Remove from database (player is offline)
                         if hasattr(self.bot, 'db_manager'):
                             await self.bot.db_manager.remove_player_session(
@@ -706,6 +705,7 @@ class UnifiedLogParser:
             return None
 
     async def create_vehicle_embed(self, action: str, vehicle_type: str) -> Optional[discord.Embed]:
+        ```python
         """Create vehicle embed - BLOCKED per requirements"""
         # Vehicle embeds are suppressed per task requirements
         return None
@@ -1192,7 +1192,7 @@ class UnifiedLogParser:
 
             loaded_count = 0
             session_count = 0
-            
+
             for guild_doc in guilds_list:
                 guild_id = guild_doc['guild_id']
                 servers = guild_doc.get('servers', [])

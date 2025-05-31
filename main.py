@@ -104,91 +104,53 @@ class EmeraldKillfeedBot(commands.Bot):
         logger.info("Bot initialized in production mode")
 
     async def load_cogs(self):
-        """Load all bot cogs using proper py-cord methods"""
-        try:
-            # List of cogs to load
-            cogs = [
-                'bot.cogs.core',
-                'bot.cogs.admin_channels', 
-                'bot.cogs.admin_batch',
-                'bot.cogs.linking',
-                'bot.cogs.stats',
-                'bot.cogs.leaderboards_fixed',
-                'bot.cogs.automated_leaderboard',
-                'bot.cogs.economy',
-                'bot.cogs.gambling',
-                'bot.cogs.bounties',
-                'bot.cogs.factions',
-                'bot.cogs.premium',
-                'bot.cogs.parsers'
-            ]
+        """Load all cogs with comprehensive error handling"""
+        cog_files = [
+            'bot.cogs.core',
+            'bot.cogs.admin_channels',
+            'bot.cogs.admin_batch',
+            'bot.cogs.linking',
+            'bot.cogs.stats',
+            'bot.cogs.leaderboards_fixed',
+            'bot.cogs.automated_leaderboard',
+            'bot.cogs.economy',
+            'bot.cogs.gambling',
+            'bot.cogs.bounties',
+            'bot.cogs.factions',
+            'bot.cogs.premium',
+            'bot.cogs.parsers'
+        ]
 
-            loaded_cogs = []
-            failed_cogs = []
+        loaded_count = 0
+        failed_cogs = []
 
-            for cog in cogs:
-                try:
-                    # Use synchronous load_extension (not awaitable in this py-cord version)
-                    self.load_extension(cog)
-                    loaded_cogs.append(cog)
-                    logger.info(f"✅ Successfully loaded cog: {cog}")
-                except Exception as e:
-                    failed_cogs.append(cog)
-                    logger.error(f"❌ Failed to load cog {cog}: {e}")
-                    import traceback
-                    logger.error(f"Cog error traceback: {traceback.format_exc()}")
+        for cog in cog_files:
+            try:
+                self.load_extension(cog)
+                logger.info(f"✅ Successfully loaded cog: {cog}")
+                loaded_count += 1
+            except Exception as e:
+                logger.error(f"❌ Failed to load cog {cog}: {e}")
+                logger.error(f"Cog error traceback: {traceback.format_exc()}")
+                failed_cogs.append(cog)
 
-            # Give py-cord time to process the cogs and register commands
-            await asyncio.sleep(2)
+        logger.info(f"📊 Loaded {loaded_count}/{len(cog_files)} cogs successfully")
 
-            # Check command registration with comprehensive debugging
-            command_count = 0
-            command_source = "none"
-            command_names = []
+        # Log command count
+        total_commands = len(self.pending_application_commands)
+        logger.info(f"📊 Total slash commands registered: {total_commands} (via pending_application_commands)")
 
-            # Check all possible command storage locations
-            if hasattr(self, 'pending_application_commands') and self.pending_application_commands:
-                command_count = len(self.pending_application_commands)
-                command_names = [cmd.name for cmd in self.pending_application_commands]
-                command_source = "pending_application_commands"
-            elif hasattr(self, 'application_commands') and self.application_commands:
-                command_count = len(self.application_commands)
-                command_names = [cmd.name for cmd in self.application_commands]
-                command_source = "application_commands"
+        # Log command names (first 10)
+        if self.pending_application_commands:
+            command_names = [cmd.name for cmd in self.pending_application_commands[:10]]
+            logger.info(f"🔍 Commands found: {', '.join(command_names)}...")
 
-            logger.info(f"📊 Loaded {len(loaded_cogs)}/{len(cogs)} cogs successfully")
-            logger.info(f"📊 Total slash commands registered: {command_count} (via {command_source})")
+        if failed_cogs:
+            logger.error(f"❌ Failed cogs: {failed_cogs}")
+            # Don't abort on cog failures in production - continue with available functionality
+            logger.warning("⚠️ Some cogs failed to load but continuing with available functionality")
 
-            if command_count > 0:
-                logger.info(f"🔍 Commands found: {', '.join(command_names[:10])}{'...' if len(command_names) > 10 else ''}")
-            else:
-                logger.error("❌ NO COMMANDS REGISTERED - Cog loading failed to register commands")
-                # Debug all cogs to see what they contain
-                for cog_name in loaded_cogs:
-                    try:
-                        cog_obj = self.get_cog(cog_name.split('.')[-1].title().replace('_', ''))
-                        if cog_obj:
-                            cog_commands = [cmd for cmd in dir(cog_obj) if hasattr(getattr(cog_obj, cmd), '__annotations__')]
-                            logger.debug(f"Cog {cog_name} methods: {cog_commands}")
-                    except:
-                        pass
-
-            if failed_cogs:
-                logger.error(f"❌ Failed cogs: {failed_cogs}")
-                return False
-
-            if command_count == 0:
-                logger.error("❌ Critical: No commands registered despite successful cog loading")
-                return False
-
-            logger.info("✅ All cogs loaded and commands registered successfully")
-            return True
-
-        except Exception as e:
-            logger.error(f"❌ Critical failure loading cogs: {e}")
-            import traceback
-            logger.error(f"Load cogs traceback: {traceback.format_exc()}")
-            return False
+        return loaded_count, failed_cogs
 
     def calculate_command_fingerprint(self, commands):
         """Generates a stable hash for the current command structure."""
@@ -214,7 +176,7 @@ class EmeraldKillfeedBot(commands.Bot):
                 else:
                     cmd_dict['options'] = []
                 command_data.append(cmd_dict)
-            
+
             # Sort by name for consistent hashing
             command_data = sorted(command_data, key=lambda x: x['name'])
             return hashlib.sha256(json.dumps(command_data, sort_keys=True).encode()).hexdigest()
@@ -290,7 +252,7 @@ class EmeraldKillfeedBot(commands.Bot):
                 logger.info("🌍 Performing global command sync...")
                 await asyncio.wait_for(self.sync_commands(), timeout=30)
                 logger.info("✅ Global sync complete")
-                
+
                 # Save successful fingerprint
                 with open(hash_file, 'w') as f:
                     f.write(current_fingerprint)
@@ -311,14 +273,14 @@ class EmeraldKillfeedBot(commands.Bot):
             # Per-guild fallback
             logger.info(f"🏠 Performing per-guild sync fallback for {len(self.guilds)} guilds...")
             success_count = 0
-            
+
             for guild in self.guilds:
                 try:
                     await asyncio.wait_for(self.sync_commands(guild_ids=[guild.id]), timeout=15)
                     success_count += 1
                     logger.info(f"✅ Guild sync: {guild.name}")
                     await asyncio.sleep(1.5)  # Rate limit prevention
-                    
+
                 except Exception as ge:
                     error_msg = str(ge).lower()
                     if "429" in error_msg or "rate limit" in error_msg:
@@ -346,7 +308,7 @@ class EmeraldKillfeedBot(commands.Bot):
         """Clean up AsyncSSH connections on shutdown with enhanced error recovery"""
         try:
             cleanup_tasks = []
-            
+
             # Killfeed parser cleanup
             if hasattr(self, 'killfeed_parser') and self.killfeed_parser:
                 cleanup_tasks.append(self._cleanup_parser_connections(self.killfeed_parser, "killfeed"))
@@ -376,14 +338,14 @@ class EmeraldKillfeedBot(commands.Bot):
         """Force cleanup of any remaining connections"""
         try:
             import gc
-            
+
             # Clear any remaining parser state
             if hasattr(self, 'unified_log_parser') and self.unified_log_parser:
                 self.unified_log_parser.reset_parser_state()
-            
+
             # Force garbage collection
             gc.collect()
-            
+
         except Exception as e:
             logger.error(f"Error in force cleanup: {e}")
 
@@ -401,9 +363,9 @@ class EmeraldKillfeedBot(commands.Bot):
                     except Exception as e:
                         logger.debug(f"Error closing connection {pool_key}: {e}")
                 parser.sftp_connections.clear()
-                
+
             logger.debug(f"Cleaned up {parser_name} parser connections")
-            
+
         except Exception as e:
             logger.error(f"Failed to cleanup {parser_name} parser connections: {e}")
 
@@ -564,7 +526,7 @@ class EmeraldKillfeedBot(commands.Bot):
             if self.assets_path.exists():
                 assets = list(self.assets_path.glob('*.png'))
                 logger.info("📁 Found %d asset files", len(assets))
-                
+
                 # Validate required assets
                 required_assets = ['main.png', 'Killfeed.png', 'Mission.png', 'Connections.png']
                 missing_assets = []
@@ -572,7 +534,7 @@ class EmeraldKillfeedBot(commands.Bot):
                     asset_path = self.assets_path / asset
                     if not asset_path.exists():
                         missing_assets.append(asset)
-                
+
                 if missing_assets:
                     logger.warning(f"⚠️ Missing required assets: {missing_assets}")
                 else:
@@ -622,7 +584,7 @@ class EmeraldKillfeedBot(commands.Bot):
                 if hasattr(self, 'db_manager'):
                     # Cancel any pending database operations
                     await asyncio.sleep(0.1)
-                
+
                 self.mongo_client.close()
                 logger.info("MongoDB connection closed")
             except Exception as e:
