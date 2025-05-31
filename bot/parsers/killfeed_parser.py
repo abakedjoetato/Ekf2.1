@@ -129,7 +129,7 @@ class KillfeedParser:
                 pool_entry = self.sftp_pool[pool_key]
                 conn = pool_entry['connection']
                 last_used = pool_entry.get('last_used', 0)
-                
+
                 # Check if connection is stale (> 5 minutes unused)
                 if current_time - last_used > 300:
                     try:
@@ -313,7 +313,7 @@ class KillfeedParser:
 
                 # Update killer: increment kills and streak
                 await self.bot.db_manager.increment_player_kill(
-                    guild_id, server_id, kill_data['killer'], kill_data.get('distance', 0)
+                    guild_id, server_id, kill_data.get('distance', 0)
                 )
 
                 # Update victim: increment deaths and reset streak
