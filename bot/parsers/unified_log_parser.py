@@ -705,7 +705,6 @@ class UnifiedLogParser:
             return None
 
     async def create_vehicle_embed(self, action: str, vehicle_type: str) -> Optional[discord.Embed]:
-        ```python
         """Create vehicle embed - BLOCKED per requirements"""
         # Vehicle embeds are suppressed per task requirements
         return None
